@@ -1,0 +1,9 @@
+# This project now uses uv for dependency management.
+#
+# Install dependencies:
+#   uv sync
+#
+# Export a requirements file for legacy environments:
+#   uv export --format requirements-txt --no-hashes > requirements.lock.txt
+#
+# Canonical dependency definitions live in pyproject.toml.
