@@ -8,7 +8,16 @@
       "Bash(npm run *)",
       "Read(//tmp/**)",
       "Bash(open http://localhost:5175)",
-      "Bash(screencapture /tmp/ui3.png)"
+      "Bash(screencapture /tmp/ui3.png)",
+      "Bash(.venv/bin/pip show *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(python3 -m pip install pandas -q)",
+      "Bash(uv pip *)",
+      "WebSearch",
+      "WebFetch(domain:www.alibabacloud.com)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }
