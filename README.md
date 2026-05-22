@@ -172,6 +172,24 @@ SQLite Checkpoint
 
 路由规则是：`intent_node` 识别为 `smalltalk` 或 `unknown`，且当前没有活跃订单时，进入 `assist_node`；如果正在收集或确认订单，则仍进入 `ask_node`，友好回应后把用户拉回下单主线。
 
+## 流式交互设计
+
+项目通过 `POST /api/chat/stream` 提供 NDJSON 流式响应，前端可以边处理边展示状态。后端使用 LangGraph 官方 `graph.astream(..., stream_mode=["updates", "messages", "custom"], version="v2")`。
+
+流式事件分工：
+
+- `updates`：节点完成后的状态更新，用于刷新预下单卡片。
+- `messages`：LLM token 级输出，作为补充通道。
+- `custom`：节点主动发出的用户可见事件，是当前主要流式通道。
+
+建议实施策略：
+
+1. `intent_node` 不直接流式展示结构化 JSON，而是通过 `custom` 持续输出进度，例如正在理解需求、正在识别意图、已识别服务类型。
+2. `assist_node` 内部消费 `create_agent().astream(...)`，并把可展示文本通过 `custom token` 推给前端。
+3. `ask_node` 内部消费 `get_llm().astream(...)`，把追问和偏题回复实时输出。
+4. `confirm_node`、`submit_node`、`cancel_node` 是模板文本，不会产生 LLM token，因此通过 `custom token` 分块输出，保证正常下单流程也有打字机效果。
+5. `intent_node`、结构化抽取、商品匹配等内部过程只输出状态，不把中间 JSON 或工具原始结果展示给用户。
+
 ## 商品匹配原理
 
 商品数据来自 `assets/spu.xlsx`，关键字段包括：

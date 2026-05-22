@@ -36,6 +36,17 @@ interface OrderPreview {
   }
 }
 
+interface StreamEvent {
+  type: 'session' | 'status' | 'preview' | 'token' | 'final' | 'error'
+  session_id?: string
+  conversation_id?: string
+  step?: string
+  message?: string
+  content?: string
+  answer?: string
+  order_preview?: OrderPreview | null
+}
+
 interface SessionSummary {
   id: string
   title: string
@@ -51,6 +62,7 @@ const inputText = ref('')
 const isListening = ref(false)
 const isSending = ref(false)
 const errorMessage = ref('')
+const streamStatus = ref('')
 const showHistory = ref(false)
 const chatBodyRef = ref<HTMLElement | null>(null)
 const historyRef = ref<HTMLElement | null>(null)
@@ -63,6 +75,7 @@ localStorage.setItem(SESSION_KEY, sessionId.value)
 
 const shortSessionId = computed(() => sessionId.value.slice(0, 8).toUpperCase())
 const hasUserMessage = computed(() => messages.value.some((m) => m.role === 'user'))
+const hasPendingAssistantMessage = computed(() => messages.value.some((m) => m.role === 'assistant' && !m.content))
 
 const filledCount = computed(() =>
   [preOrder.value.roomNumber, preOrder.value.product, preOrder.value.fault, preOrder.value.area, preOrder.value.urgency].filter(Boolean).length
@@ -137,7 +150,21 @@ function persistHistory() {
 }
 
 function appendMessage(role: Role, content: string) {
-  messages.value.push({ id: Date.now() + Math.floor(Math.random() * 999), role, content, time: currentTime() })
+  const id = Date.now() + Math.floor(Math.random() * 999)
+  messages.value.push({ id, role, content, time: currentTime() })
+  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
+  return id
+}
+
+function setMessageContent(id: number, content: string) {
+  const message = messages.value.find((item) => item.id === id)
+  if (message) message.content = content
+  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
+}
+
+function appendMessageContent(id: number, content: string) {
+  const message = messages.value.find((item) => item.id === id)
+  if (message) message.content += content
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
 }
 
@@ -187,9 +214,33 @@ async function sendMessage(text = inputText.value) {
 
   inferPreOrder(content)
   appendMessage('user', content)
+  const assistantMessageId = appendMessage('assistant', '')
+  streamStatus.value = '正在连接智能体...'
   isSending.value = true
 
   try {
+    await sendStreamingMessage(content, assistantMessageId)
+  } catch (err) {
+    if (err instanceof Error && err.name === 'StreamEventError') {
+      errorMessage.value = err.message
+      setMessageContent(assistantMessageId, '智能体处理失败，请稍后重试。')
+      isSending.value = false
+      streamStatus.value = ''
+      return
+    }
+    try {
+      await sendFallbackMessage(content, assistantMessageId)
+    } catch {
+      errorMessage.value = err instanceof Error ? err.message : '网络请求失败'
+      setMessageContent(assistantMessageId, '后端暂时不可用，已帮您保留预下单信息。')
+    }
+  } finally {
+    isSending.value = false
+    streamStatus.value = ''
+  }
+}
+
+async function sendFallbackMessage(content: string, assistantMessageId: number) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -199,12 +250,75 @@ async function sendMessage(text = inputText.value) {
     const data = await res.json()
     if (data.session_id) { sessionId.value = data.session_id; localStorage.setItem(SESSION_KEY, data.session_id) }
     applyOrderPreview(data.order_preview)
-    appendMessage('assistant', data.answer || '我已收到，会继续为您处理。')
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : '网络请求失败'
-    appendMessage('assistant', '后端暂时不可用，已帮您保留预下单信息。')
-  } finally {
-    isSending.value = false
+    setMessageContent(assistantMessageId, data.answer || '我已收到，会继续为您处理。')
+}
+
+async function sendStreamingMessage(content: string, assistantMessageId: number) {
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId.value, message: content }),
+  })
+  if (!res.ok || !res.body) throw new Error(`请求失败 ${res.status}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let streamedAnswer = ''
+
+  const handleEvent = (event: StreamEvent) => {
+    if (event.type === 'session' && event.session_id) {
+      sessionId.value = event.session_id
+      localStorage.setItem(SESSION_KEY, event.session_id)
+      return
+    }
+    if (event.type === 'status') {
+      streamStatus.value = event.message || '正在处理您的请求...'
+      return
+    }
+    if (event.type === 'preview') {
+      applyOrderPreview(event.order_preview)
+      return
+    }
+    if (event.type === 'token') {
+      const chunk = event.content || ''
+      streamedAnswer += chunk
+      appendMessageContent(assistantMessageId, chunk)
+      return
+    }
+    if (event.type === 'final') {
+      if (event.session_id) {
+        sessionId.value = event.session_id
+        localStorage.setItem(SESSION_KEY, event.session_id)
+      }
+      applyOrderPreview(event.order_preview)
+      setMessageContent(assistantMessageId, streamedAnswer || event.answer || '我已收到，会继续为您处理。')
+      return
+    }
+    if (event.type === 'error') {
+      const streamError = new Error(event.message || '智能体处理失败')
+      streamError.name = 'StreamEventError'
+      throw streamError
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      const text = line.trim()
+      if (!text) continue
+      handleEvent(JSON.parse(text))
+    }
+  }
+
+  const lastLine = buffer.trim()
+  if (lastLine) handleEvent(JSON.parse(lastLine))
+  if (!messages.value.find((item) => item.id === assistantMessageId)?.content) {
+    setMessageContent(assistantMessageId, '我已收到，会继续为您处理。')
   }
 }
 
@@ -386,7 +500,11 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                   <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
                   <div class="min-w-0 flex-1">
                     <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
-                    <p class="text-[15px] leading-7 text-slate-700 whitespace-pre-wrap">{{ message.content }}</p>
+                    <p v-if="message.content" class="text-[15px] leading-7 text-slate-700 whitespace-pre-wrap">{{ message.content }}</p>
+                    <p v-else class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-[12px] text-indigo-600">
+                      <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500"></span>
+                      {{ streamStatus || '正在处理您的请求...' }}
+                    </p>
                     <p class="mt-2 text-[11px] text-slate-400">{{ message.time }}</p>
                   </div>
                 </div>
@@ -403,12 +521,15 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
               </template>
 
               <!-- Typing indicator -->
-              <div v-if="isSending" class="flex items-start gap-3.5">
+              <div v-if="isSending && !hasPendingAssistantMessage" class="flex items-start gap-3.5">
                 <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
-                <div class="flex items-center gap-1.5 rounded-2xl rounded-tl-md border border-slate-100 bg-slate-50 px-4 py-3.5">
-                  <span class="h-2 w-2 rounded-full bg-slate-400 animate-bounce"></span>
-                  <span class="h-2 w-2 rounded-full bg-slate-400 animate-bounce" style="animation-delay:150ms"></span>
-                  <span class="h-2 w-2 rounded-full bg-slate-400 animate-bounce" style="animation-delay:300ms"></span>
+                <div class="flex items-center gap-3 rounded-2xl rounded-tl-md border border-slate-100 bg-slate-50 px-4 py-3.5">
+                  <div class="flex items-center gap-1.5">
+                    <span class="h-2 w-2 rounded-full bg-slate-400 animate-bounce"></span>
+                    <span class="h-2 w-2 rounded-full bg-slate-400 animate-bounce" style="animation-delay:150ms"></span>
+                    <span class="h-2 w-2 rounded-full bg-slate-400 animate-bounce" style="animation-delay:300ms"></span>
+                  </div>
+                  <span class="text-[12px] text-slate-500">{{ streamStatus || '正在处理您的请求...' }}</span>
                 </div>
               </div>
             </div>

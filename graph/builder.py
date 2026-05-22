@@ -1,5 +1,6 @@
 import json
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
@@ -99,6 +101,19 @@ def get_latest_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
     return None
 
 
+def get_optional_stream_writer():
+    try:
+        return get_stream_writer()
+    except RuntimeError:
+        return None
+
+
+def emit_status(step: str, message: str) -> None:
+    writer = get_optional_stream_writer()
+    if writer:
+        writer({"type": "status", "step": step, "message": message})
+
+
 def has_active_order(state: AgentState) -> bool:
     return state.get("status") in ACTIVE_ORDER_STATUSES
 
@@ -119,12 +134,14 @@ def get_extractor_history(state: AgentState) -> str:
 async def intent_node(state: AgentState) -> dict[str, object]:
     """一次性完成意图识别和订单信息抽取。"""
 
+    emit_status("intent_node", "正在理解您的需求...")
     trace_event(
         "node.intent.input",
         last_user_message=get_last_human_message(state["messages"]),
         message_count=len(state["messages"]),
         status=state.get("status"),
     )
+    emit_status("intent_node", "正在识别意图并提取订单信息...")
     llm = get_llm().with_structured_output(IntentResult)
     result = await llm.ainvoke(
         [
@@ -143,14 +160,21 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     last_user_message = get_last_human_message(state["messages"])
     user_cancelled = result.user_cancelled or (has_active_order(state) and is_cancel_request(last_user_message))
     intent = "cancel_order" if user_cancelled else result.intent
+    emit_status("intent_node", f"已识别意图：{intent}")
 
     service_type = result.service_type or state.get("service_type")
+    if service_type:
+        emit_status("intent_node", f"已识别服务类型：{service_type}")
 
     status = state.get("status")
     if intent in {"create_order", "confirm_order"}:
         status = "collecting"
+        emit_status("intent_node", "正在整理订单信息...")
     elif intent in {"smalltalk", "unknown"} and not has_active_order(state):
         status = state.get("status") or "idle"
+        emit_status("intent_node", "正在准备辅助回复...")
+    elif intent == "cancel_order":
+        emit_status("intent_node", "已收到取消请求...")
 
     detected_fields = {
         "room_number": result.room_number,
@@ -186,6 +210,8 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "last_user_message": last_user_message,
     }
     trace_event("node.intent.output", **output)
+    if intent in {"create_order", "confirm_order"}:
+        emit_status("intent_node", "已完成需求理解，准备匹配商品...")
     return output
 
 
@@ -294,6 +320,43 @@ def build_missing_info_fallback_question(missing_info: list[str]) -> str:
     return questions.get(field, f"请补充{field}。")
 
 
+def message_chunk_to_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    return ""
+
+
+async def emit_token_text(text: str, step: str, chunk_size: int = 4, delay_seconds: float = 0.015) -> None:
+    writer = get_optional_stream_writer()
+    if not writer:
+        return
+
+    for index in range(0, len(text), chunk_size):
+        token = text[index : index + chunk_size]
+        if token:
+            writer({"type": "token", "step": step, "content": token})
+            await asyncio.sleep(delay_seconds)
+
+
+async def stream_llm_text(messages: list[BaseMessage], step: str) -> str:
+    parts: list[str] = []
+    async for chunk in get_llm().astream(messages):
+        token = message_chunk_to_text(getattr(chunk, "content", ""))
+        if not token:
+            continue
+        parts.append(token)
+        await emit_token_text(token, step=step, chunk_size=4, delay_seconds=0)
+    return "".join(parts).strip()
+
+
 async def build_missing_info_question(state: AgentState) -> str:
     missing_info = state.get("missing_info", [])
     if not missing_info:
@@ -306,8 +369,7 @@ async def build_missing_info_question(state: AgentState) -> str:
         asked_questions=get_asked_questions(state.get("messages", [])),
         last_user_message=get_last_human_message(state.get("messages", [])),
     )
-    response = await get_llm().ainvoke([SystemMessage(content=prompt)])
-    question = str(response.content).strip()
+    question = await stream_llm_text([SystemMessage(content=prompt)], step="ask_node")
     return question or build_missing_info_fallback_question(missing_info)
 
 
@@ -329,8 +391,7 @@ async def build_topic_boundary_response(state: AgentState) -> str:
         off_topic_count=state.get("off_topic_count", 0) + 1,
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
-    response = await get_llm().ainvoke([SystemMessage(content=prompt)])
-    answer = str(response.content).strip()
+    answer = await stream_llm_text([SystemMessage(content=prompt)], step="ask_node")
     return answer or render_prompt(
         "ask/maintenance_unknown_intent.md",
         next_question=next_question or "如果需要继续报修，请告诉我房号和故障。",
@@ -353,6 +414,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
             "ask/retry_missing_info.md",
             missing_info=", ".join(missing_info),
         )
+        await emit_token_text(question, step="ask_node")
     else:
         question = await build_missing_info_question(state)
 
@@ -392,14 +454,36 @@ async def assist_node(state: AgentState) -> dict[str, object]:
         intent=state.get("intent"),
         status=state.get("status"),
     )
-    result = await get_assist_agent().ainvoke({"messages": state.get("messages", [])})
-    answer_message = get_latest_ai_message(result.get("messages", []))
-    answer = answer_message.content if answer_message else "如果需要下单，请告诉我房号、商品和问题。"
+    answer_parts: list[str] = []
+    latest_messages: list[BaseMessage] = []
+    async for part in get_assist_agent().astream(
+        {"messages": state.get("messages", [])},
+        stream_mode=["messages", "updates"],
+        version="v2",
+    ):
+        part_type = part.get("type")
+        data = part.get("data")
+        if part_type == "messages" and isinstance(data, tuple):
+            message_chunk, _metadata = data
+            token = message_chunk_to_text(getattr(message_chunk, "content", ""))
+            if token:
+                answer_parts.append(token)
+                await emit_token_text(token, step="assist_node", chunk_size=4, delay_seconds=0)
+        elif part_type == "updates" and isinstance(data, dict):
+            for node_update in data.values():
+                if isinstance(node_update, dict) and isinstance(node_update.get("messages"), list):
+                    latest_messages = node_update["messages"]
+
+    answer = "".join(answer_parts).strip()
+    if not answer:
+        answer_message = get_latest_ai_message(latest_messages)
+        answer = str(answer_message.content) if answer_message else "如果需要下单，请告诉我房号、商品和问题。"
+        await emit_token_text(answer, step="assist_node")
 
     trace_event(
         "node.assist.output",
         answer=str(answer),
-        message_count=len(result.get("messages", [])),
+        message_count=len(latest_messages),
     )
     return {
         "messages": [AIMessage(content=str(answer))],
@@ -432,6 +516,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
         product_name=matched_product.get("service_product_name") or "未匹配到标准商品",
         product_code=matched_product.get("service_product_code") or "无",
     )
+    await emit_token_text(confirmation_text, step="confirm_node")
 
     trace_event(
         "node.confirm.output",
@@ -450,6 +535,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
     """取消当前预下单，避免旧订单继续参与后续对话。"""
 
     answer = "已取消本次订单。"
+    await emit_token_text(answer, step="cancel_node")
     output = {
         "messages": [AIMessage(content=answer)],
         "step": "cancel_node",
@@ -499,6 +585,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         order_info=state.get("order_info", {}),
         matched_product=matched_product,
     )
+    await emit_token_text(answer, step="submit_node")
 
     output = {
         "messages": [AIMessage(content=answer)],
@@ -684,6 +771,166 @@ def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
         "product_match_query": state.get("product_match_query"),
         "missing_info": state.get("missing_info") or [],
     }
+
+
+NODE_STATUS_MESSAGES = {
+    "intent_node": "正在理解您的需求并提取订单信息...",
+    "match_product_node": "正在匹配可下单的标准商品...",
+    "validate_order_node": "正在检查订单信息是否完整...",
+    "ask_node": "正在生成追问问题...",
+    "confirm_node": "正在整理订单确认信息...",
+    "submit_node": "正在提交订单...",
+    "cancel_node": "正在取消当前订单...",
+    "assist_node": "正在调用辅助智能体处理问题...",
+}
+
+STREAMABLE_TOKEN_NODES: set[str] = set()
+
+
+async def stream_agent_events(
+    user_message: str,
+    session_id: str | None,
+) -> AsyncIterator[dict[str, object]]:
+    active_session_id = session_id or str(uuid4())
+
+    trace_event(
+        "agent.stream.start",
+        session_id=active_session_id,
+        user_message=user_message,
+    )
+    yield {
+        "type": "session",
+        "session_id": active_session_id,
+        "conversation_id": active_session_id,
+    }
+    yield {
+        "type": "status",
+        "step": "intent_node",
+        "message": NODE_STATUS_MESSAGES["intent_node"],
+    }
+
+    initial_state: AgentState = {
+        "conversation_id": active_session_id,
+        "messages": [HumanMessage(content=user_message)],
+        "last_user_message": user_message,
+    }
+
+    try:
+        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+            await checkpointer.setup()
+            graph = build_graph(checkpointer)
+            config = get_graph_config(active_session_id)
+
+            latest_state: dict[str, object] = dict(initial_state)
+            emitted_token = False
+            async for part in graph.astream(
+                initial_state,
+                config=config,
+                stream_mode=["updates", "messages", "custom"],
+                version="v2",
+            ):
+                part_type = part.get("type")
+                data = part.get("data")
+
+                if part_type == "updates" and isinstance(data, dict):
+                    for node_name, node_update in data.items():
+                        if not isinstance(node_update, dict):
+                            continue
+
+                        latest_state.update(node_update)
+                        yield {
+                            "type": "status",
+                            "step": node_name,
+                            "message": NODE_STATUS_MESSAGES.get(node_name, "正在处理您的请求..."),
+                        }
+
+                        order_preview = build_order_preview(latest_state)
+                        if order_preview:
+                            yield {
+                                "type": "preview",
+                                "step": node_name,
+                                "order_preview": order_preview,
+                            }
+
+                if part_type == "messages" and isinstance(data, tuple):
+                    message_chunk, metadata = data
+                    if not isinstance(metadata, dict):
+                        continue
+
+                    node_name = metadata.get("langgraph_node")
+                    if node_name not in STREAMABLE_TOKEN_NODES:
+                        continue
+
+                    token = message_chunk_to_text(getattr(message_chunk, "content", ""))
+                    if not token:
+                        continue
+
+                    if not emitted_token:
+                        emitted_token = True
+                        yield {
+                            "type": "status",
+                            "step": node_name,
+                            "message": "正在输出回复...",
+                        }
+
+                    yield {
+                        "type": "token",
+                        "step": node_name,
+                        "content": token,
+                    }
+
+                if part_type == "custom":
+                    if isinstance(data, dict) and data.get("type") in {"status", "token", "preview"}:
+                        yield data
+                    else:
+                        yield {
+                            "type": "status",
+                            "message": str(data),
+                        }
+
+            snapshot = await graph.aget_state(config)
+            final_state = snapshot.values or latest_state
+            answer = get_interrupt_answer(final_state) or final_state["messages"][-1].content
+            state_messages = final_state.get("messages", [])
+            last_message = state_messages[-1] if state_messages else None
+            if not isinstance(last_message, AIMessage) or last_message.content != answer:
+                await graph.aupdate_state(
+                    config,
+                    {"messages": [AIMessage(content=answer)]},
+                    as_node="ask_node",
+                )
+
+        trace_event(
+            "agent.stream.end",
+            session_id=active_session_id,
+            answer=answer,
+            step=final_state.get("step"),
+            intent=final_state.get("intent"),
+            service_type=final_state.get("service_type"),
+            order_info=final_state.get("order_info"),
+            missing_info=final_state.get("missing_info"),
+        )
+
+        await save_conversation_log(active_session_id, "human", user_message)
+        await save_conversation_log(active_session_id, "ai", str(answer))
+
+        yield {
+            "type": "final",
+            "session_id": active_session_id,
+            "conversation_id": active_session_id,
+            "answer": str(answer),
+            "order_preview": build_order_preview(final_state),
+        }
+    except Exception as exc:
+        trace_event(
+            "agent.stream.error",
+            session_id=active_session_id,
+            error=repr(exc),
+        )
+        yield {
+            "type": "error",
+            "message": f"智能体处理失败：{exc}",
+        }
 
 
 async def run_agent(
