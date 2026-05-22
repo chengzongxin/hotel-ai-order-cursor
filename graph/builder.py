@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from config.logging import trace_event
 from config.settings import settings
+from graph.agent_runtime import get_assist_agent
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
 from tools.product_match import match_product_tool
@@ -89,6 +90,13 @@ def get_asked_questions(messages: list[BaseMessage]) -> list[str]:
         for message in messages
         if isinstance(message, AIMessage) and ("?" in str(message.content) or "？" in str(message.content))
     ]
+
+
+def get_latest_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            return message
+    return None
 
 
 def has_active_order(state: AgentState) -> bool:
@@ -375,6 +383,31 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     return output
 
 
+async def assist_node(state: AgentState) -> dict[str, object]:
+    """使用 LangChain 官方 create_agent middleware 处理非主下单咨询。"""
+
+    trace_event(
+        "node.assist.input",
+        message_count=len(state.get("messages", [])),
+        intent=state.get("intent"),
+        status=state.get("status"),
+    )
+    result = await get_assist_agent().ainvoke({"messages": state.get("messages", [])})
+    answer_message = get_latest_ai_message(result.get("messages", []))
+    answer = answer_message.content if answer_message else "如果需要下单，请告诉我房号、商品和问题。"
+
+    trace_event(
+        "node.assist.output",
+        answer=str(answer),
+        message_count=len(result.get("messages", [])),
+    )
+    return {
+        "messages": [AIMessage(content=str(answer))],
+        "step": "assist_node",
+        "status": state.get("status") or "idle",
+    }
+
+
 async def confirm_node(state: AgentState) -> dict[str, object]:
     """让用户确认订单信息。"""
 
@@ -497,6 +530,8 @@ def route_after_intent(state: AgentState) -> str:
         return "cancel_node"
     if intent in {"create_order", "confirm_order"}:
         return "match_product_node"
+    if intent in {"smalltalk", "unknown"} and not has_active_order(state):
+        return "assist_node"
     return "ask_node"
 
 
@@ -519,6 +554,7 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
     graph.add_node("match_product_node", match_product_node)
     graph.add_node("validate_order_node", validate_order_node)
     graph.add_node("ask_node", ask_node)
+    graph.add_node("assist_node", assist_node)
     graph.add_node("confirm_node", confirm_node)
     graph.add_node("cancel_node", cancel_node)
     graph.add_node("submit_node", submit_node)
@@ -530,6 +566,7 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
         {
             "cancel_node": "cancel_node",
             "match_product_node": "match_product_node",
+            "assist_node": "assist_node",
             "ask_node": "ask_node",
         },
     )
@@ -551,6 +588,7 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
         },
     )
     graph.add_edge("ask_node", END)
+    graph.add_edge("assist_node", END)
     graph.add_edge("cancel_node", END)
     graph.add_edge("submit_node", END)
 
