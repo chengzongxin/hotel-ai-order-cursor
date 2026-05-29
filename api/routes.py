@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -11,7 +12,6 @@ from graph.builder import (
     run_agent,
     stream_agent_events,
 )
-from rag.product_store import get_product_store
 from rag.spu_loader import SpuExcelLoader
 from schemas.chat import ChatRequest, ChatResponse, HistoryResponse, MessageItem
 from schemas.product import (
@@ -21,6 +21,7 @@ from schemas.product import (
     ProductSearchResponse,
     ProductSearchResult,
 )
+from tools.product_search import search_product_tool
 
 router = APIRouter(tags=["chat"])
 
@@ -99,11 +100,12 @@ async def list_products(
 
 @router.post("/products/search", response_model=ProductSearchResponse, tags=["products"])
 async def search_products(request: ProductSearchRequest) -> ProductSearchResponse:
-    search_query = " ".join(
-        v for v in [request.query, request.product, request.fault, request.area] if v
+    result = await asyncio.to_thread(
+        search_product_tool.invoke,
+        {"query": request.query, "top_k": request.top_k, "threshold": request.threshold},
     )
-    store = get_product_store()
-    raw_results = store.search(query=search_query, top_k=request.top_k, threshold=request.threshold)
+    data = result.get("data", {})
+    candidates = data.get("candidates") or []
     results = [
         ProductSearchResult(
             score=r["score"],
@@ -116,6 +118,6 @@ async def search_products(request: ProductSearchRequest) -> ProductSearchRespons
             price=r["price"],
             unit=r["unit"],
         )
-        for r in raw_results
+        for r in candidates
     ]
-    return ProductSearchResponse(query=search_query, count=len(results), results=results)
+    return ProductSearchResponse(query=data.get("query", request.query), count=len(results), results=results)

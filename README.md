@@ -48,10 +48,10 @@ flowchart TD
     START([START]) --> intent_node[intent_node<br/>识别意图并抽取订单信息]
 
     intent_node -->|cancel_order| cancel_node[cancel_node<br/>取消并清空预下单]
-    intent_node -->|create_order / confirm_order| match_product_node[match_product_node<br/>匹配标准商品]
+    intent_node -->|create_order / confirm_order| search_product_node[search_product_node<br/>匹配标准商品]
     intent_node -->|unknown / smalltalk| ask_node[ask_node<br/>友好回应或追问]
 
-    match_product_node --> validate_order_node[validate_order_node<br/>检查缺失订单信息]
+    search_product_node --> validate_order_node[validate_order_node<br/>检查缺失订单信息]
 
     validate_order_node -->|有缺失订单信息| ask_node
     validate_order_node -->|订单信息完整| confirm_node[confirm_node<br/>展示预下单信息]
@@ -67,7 +67,7 @@ flowchart TD
 节点职责：
 
 - `intent_node`：识别 `intent`，并抽取 `order_info`（product、fault、room_number、area、urgency、expected_start_time、goods_arrival_status 等）。不提取 `service_type`，由商品匹配结果决定。
-- `match_product_node`：用 `product + fault` 向量检索标准商品，匹配成功后从商品的 `service_order_type` 确定 `service_type`；匹配失败则 `service_type` 为 null。
+- `search_product_node`：用 `product + fault` 向量检索标准商品，匹配成功后从商品的 `service_order_type` 确定 `service_type`；匹配失败则 `service_type` 为 null。
 - `validate_order_node`：按 `service_type` 取对应必填字段清单，与 `order_info` 对比，计算 `missing_info`。
 - `ask_node`：追问缺失信息，或处理闲聊/偏题。
 - `confirm_node`：展示预下单信息，等待用户确认。
@@ -89,8 +89,8 @@ flowchart TD
 | `missing_info` | 仍需追问的订单信息字段 |
 | `matched_product` | 匹配到的标准商品 |
 | `product_candidates` | 商品候选列表 |
-| `product_match_status` | 商品匹配状态：`skipped`、`success`、`no_match`、`error` |
-| `product_match_query` | 本轮用于商品匹配的查询文本 |
+| `product_search_status` | 商品匹配状态：`skipped`、`success`、`no_match`、`error` |
+| `product_search_query` | 本轮用于商品匹配的查询文本 |
 | `last_order` | 最近一次已提交订单 |
 | `off_topic_count` | 用户偏离当前下单任务的次数 |
 
@@ -135,7 +135,7 @@ SQLite Checkpoint
 | `rag/product_store.py` | Chroma 向量库封装，商品检索主路径 |
 | `rag/qwen_embedding.py` | Qwen text-embedding 客户端 |
 | `rag/spu_loader.py` | Excel SPU 数据加载和服务类型归一化 |
-| `tools/product_match.py` | `match_product_tool` |
+| `tools/product_search.py` | `search_product_tool`：向量检索商品，对话节点与 HTTP 接口的统一入口 |
 | `tools/maintenance.py` | 下单相关业务工具 |
 | `config/settings.py` | 项目配置入口 |
 | `frontend/` | Vue 3 前端页面 |
@@ -208,7 +208,7 @@ SQLite Checkpoint
 3. 用 Qwen `text-embedding-v4` 将索引文本向量化，写入 Chroma 向量库（`data/chroma_db/`）。
 4. 索引版本写入 `data/chroma_db/build_metadata.json`，版本或文件变化时自动重建。
 
-**检索**（`match_product_node`）：
+**检索**（`search_product_node`）：
 
 1. 检索 query = `用户说的商品名 + 故障现象`。安装/测量场景无故障现象，query 退化为只有商品名。
 2. Chroma 余弦相似度召回 Top-K，过滤低分候选。
@@ -285,8 +285,8 @@ curl -X POST http://localhost:8000/api/chat \
       "service_order_type": "单次维修服务"
     },
     "product_candidates": [],
-    "product_match_status": "success",
-    "product_match_query": "门锁 打不开 卫生间",
+    "product_search_status": "success",
+    "product_search_query": "门锁 打不开 卫生间",
     "missing_info": []
   }
 }
@@ -429,7 +429,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 | `SPU_EXCEL_PATH` | SPU Excel 路径 |
 | `QWEN_EMBEDDING_API_KEY` | Qwen embedding API Key |
 | `QWEN_EMBEDDING_BATCH_SIZE` | Qwen embedding 批量大小，最大建议 10 |
-| `PRODUCT_MATCH_THRESHOLD` | 商品匹配相似度阈值（Chroma 向量检索用） |
+| `PRODUCT_SEARCH_THRESHOLD` | 商品搜索相似度阈值（Chroma 向量检索用） |
 
 注意：项目通过 `load_dotenv(".env", override=True)` 让 `.env` 优先于系统环境变量。
 
@@ -464,7 +464,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 ├── prompts/                     # 文件化 Prompt
 ├── rag/                         # Qwen embedding 和商品匹配
 ├── schemas/                     # API 请求/响应模型
-├── tests/                       # 测试数据
+├── tests/                       # 集成测试（pytest + pytest-asyncio）
 ├── tools/                       # LangChain Tool 和工具协议
 ├── .env.example                 # 环境变量示例
 ├── docker-compose.yml
@@ -482,7 +482,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 3. 不要重新引入旧字段：`repair_order`、`current_order_type`、`extracted_fields`、`missing_fields`、`slots`、`order_kind`。
 4. 普通用户确认/取消不要使用 LangGraph `interrupt()`，应通过 `intent` 和路由进入 `submit_node` 或 `cancel_node`。
 5. Prompt 必须文件化，优先修改 `prompts/`，不要把大段 Prompt 写死在 Python 里。
-6. 商品匹配主路径是 `rag/product_store.py`（`ProductVectorStore` / Chroma）。工具层入口是 `match_product_tool`，节点是 `match_product_node`，状态字段用 `product_match_*` 前缀。
+6. 商品检索主路径是 `rag/product_store.py`（`ProductVectorStore` / Chroma）。工具层入口是 `tools/product_search.py::search_product_tool`，节点是 `search_product_node`，HTTP 接口 `/api/products/search` 也统一走这个工具，状态字段用 `product_search_*` 前缀。
 7. Excel 原始字段 `service_product_code`、`service_product_name`、`service_order_type` 是业务数据列名，可以保留。
 8. 修改状态字段时，需要同步更新：
    - `graph/state.py`
@@ -498,7 +498,31 @@ uv run python -m compileall graph api schemas tools rag config
 cd frontend && npm run build
 ```
 
-## 常见问题
+## 集成测试
+
+`tests/test_chat_flow.py` 覆盖 13 个聊天流程场景，调用真实 LLM，每个用例独立 session 并在结束后清理。
+
+```bash
+# 运行全部
+.venv/bin/python -m pytest tests/test_chat_flow.py -v
+
+# 只跑某一组
+.venv/bin/python -m pytest tests/test_chat_flow.py -v -k "TestSingleTurn"
+.venv/bin/python -m pytest tests/test_chat_flow.py -v -k "TestMultiTurn"
+
+# 单个用例
+.venv/bin/python -m pytest tests/test_chat_flow.py::TestSingleTurnComplete::test_guest_room_ac_repair -v
+```
+
+| 分组 | 用例数 | 覆盖场景 |
+|------|--------|---------|
+| `TestSingleTurnComplete` | 3 | 字段完整、公区识别 |
+| `TestMissingField` | 3 | 缺房号 / 商品、模糊故障 |
+| `TestMultiTurn` | 3 | 多轮补齐、纠正字段、公区接客房 |
+| `TestCancelAndSmallTalk` | 2 | 取消、闲聊不下单 |
+| `TestProductMatch` | 2 | service_type 来自商品匹配 |
+
+
 
 ### 为什么不用 `interrupt()` 做用户确认？
 

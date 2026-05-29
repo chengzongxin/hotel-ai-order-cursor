@@ -23,10 +23,6 @@ class ProductListResponse(BaseModel):
 
 class ProductSearchRequest(BaseModel):
     query: str
-    product: str | None = None
-    fault: str | None = None
-    area: str | None = None
-    service_type_hint: str | None = None
     top_k: int = Field(default=10, ge=1, le=50)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 

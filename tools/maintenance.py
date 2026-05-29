@@ -7,18 +7,12 @@ from pydantic import BaseModel, Field
 from tools.protocol import (
     ToolErrorCode,
     ToolResult,
-    error_response,
     fallback_response,
     run_with_timeout,
     success_response,
 )
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 3.0
-
-
-class SearchProductInput(BaseModel):
-    keyword: str = Field(..., min_length=1, description="商品、设备或物品关键词")
-    area: str | None = Field(default=None, description="问题区域，例如卫生间、卧室、客厅")
 
 
 class CreateOrderInput(BaseModel):
@@ -35,41 +29,6 @@ class CreateOrderInput(BaseModel):
 class CheckPackageInput(BaseModel):
     room_number: str = Field(..., min_length=1, description="房号")
     product: str = Field(..., min_length=1, description="商品、设备或物品")
-
-
-async def _search_product(keyword: str, area: str | None) -> ToolResult:
-    await asyncio.sleep(0)
-
-    product_catalog = [
-        {"product_id": "air_conditioner", "name": "空调", "areas": ["卧室", "客厅"]},
-        {"product_id": "faucet", "name": "水龙头", "areas": ["卫生间", "厨房"]},
-        {"product_id": "door_lock", "name": "门锁", "areas": ["房门", "卧室"]},
-        {"product_id": "television", "name": "电视", "areas": ["卧室", "客厅"]},
-    ]
-    matched_products = [
-        item
-        for item in product_catalog
-        if keyword in item["name"] or keyword in item["product_id"]
-    ]
-
-    if area:
-        matched_products = [
-            item
-            for item in matched_products
-            if area in item["areas"]
-        ] or matched_products
-
-    if not matched_products:
-        return fallback_response(
-            message="未找到精确匹配的商品，已使用人工兜底分类",
-            fallback={
-                "fallback_type": "manual_product_classification",
-                "next_action": "ask_staff_to_classify_product",
-            },
-            data={"keyword": keyword, "area": area},
-        )
-
-    return success_response(data={"products": matched_products})
 
 
 async def _create_order(payload: CreateOrderInput) -> ToolResult:
@@ -112,24 +71,6 @@ async def _check_package(room_number: str, product: str) -> ToolResult:
             "is_covered": is_covered,
             "package_name": "基础客房维修包" if is_covered else None,
         }
-    )
-
-
-@tool(args_schema=SearchProductInput)
-async def search_product_tool(keyword: str, area: str | None = None) -> ToolResult:
-    """查询商品或设备，返回标准 JSON。"""
-
-    return await run_with_timeout(
-        action=lambda: _search_product(keyword=keyword, area=area),
-        timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
-        fallback=lambda: fallback_response(
-            message="商品查询超时，已转人工分类",
-            fallback={
-                "fallback_type": "manual_product_classification",
-                "next_action": "ask_staff_to_classify_product",
-            },
-            data={"keyword": keyword, "area": area},
-        ),
     )
 
 

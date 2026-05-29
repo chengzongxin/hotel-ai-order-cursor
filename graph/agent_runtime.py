@@ -18,8 +18,9 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from config.logging import trace_event
 from config.settings import settings
 from tools.basic import current_time
-from tools.maintenance import check_package_tool, search_product_tool
+from tools.maintenance import check_package_tool
 from tools.qdrant_placeholder import qdrant_status
+from tools.product_search import search_product_tool
 
 
 @lru_cache

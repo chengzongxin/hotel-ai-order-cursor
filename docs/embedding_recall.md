@@ -56,12 +56,12 @@ SPU_EXCEL_PATH=assets/spu.xlsx
 QWEN_EMBEDDING_MODEL=text-embedding-v4
 QWEN_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_EMBEDDING_API_KEY=
-PRODUCT_MATCH_THRESHOLD=0.55
+PRODUCT_SEARCH_THRESHOLD=0.55
 ```
 
 ## Tool
 
-### match_product_tool
+### search_product
 
 根据用户输入匹配可下单商品。
 
@@ -99,6 +99,6 @@ PRODUCT_MATCH_THRESHOLD=0.55
 
 ## 阈值过滤
 
-`PRODUCT_MATCH_THRESHOLD` 越高，结果越少但更精确，默认 `0.55`。
+`PRODUCT_SEARCH_THRESHOLD` 越高，结果越少但更精确，默认 `0.55`。
 
 如果没有结果，可以临时降低阈值，或检查用户描述里是否包含商品名称。

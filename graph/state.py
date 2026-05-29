@@ -39,14 +39,14 @@ class AgentState(TypedDict, total=False):
     # 商品候选列表，低置信度时可给前端或人工选择。
     product_candidates: list[dict[str, Any]]
 
-    # 商品匹配状态：skipped、success、no_match、error。
-    product_match_status: str | None
+    # 商品搜索状态：skipped、success、no_match、error。
+    product_search_status: str | None
 
-    # 本轮用于商品匹配的查询文本。
-    product_match_query: str | None
+    # 本轮用于商品搜索的查询文本。
+    product_search_query: str | None
 
-    # 商品匹配成功后给用户看的反馈文案。
-    product_match_feedback: str | None
+    # 商品搜索成功后给用户看的反馈文案。
+    product_search_feedback: str | None
 
     # 仍然缺失、需要继续追问用户的订单信息名。
     missing_info: list[str]

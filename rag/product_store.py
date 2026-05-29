@@ -47,7 +47,7 @@ class ProductVectorStore:
         query = query.strip()
         if not query:
             return []
-        min_score = threshold if threshold is not None else settings.product_match_threshold
+        min_score = threshold if threshold is not None else settings.product_search_threshold
         results = self.vector_store.similarity_search_with_relevance_scores(query, k=top_k)
         output = []
         for doc, score in results:

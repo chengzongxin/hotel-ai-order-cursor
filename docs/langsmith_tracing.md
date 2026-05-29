@@ -98,7 +98,7 @@ Graph run 的 metadata 里会带：
 
 当后续把 ToolNode 或工具调用接入主图后，LangSmith 会显示工具 run，例如：
 
-- `match_product_tool`
+- `search_product`
 - `search_product_tool`
 - `create_order_tool`
 - `check_package_tool`

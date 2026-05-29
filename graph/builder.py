@@ -20,7 +20,7 @@ from config.settings import settings
 from graph.agent_runtime import get_assist_agent
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
-from tools.product_match import match_product_tool
+from tools.product_search import search_product_tool
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 MAX_RETRY_COUNT = 2
@@ -256,7 +256,7 @@ def format_urgency(value: object) -> str:
     return labels.get(str(value), str(value or "普通"))
 
 
-def build_product_match_feedback(
+def build_product_search_feedback(
     order_info: dict[str, object],
     matched_product: dict[str, object],
     service_type: str | None,
@@ -429,38 +429,34 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     return output
 
 
-async def match_product_node(state: AgentState) -> dict[str, object]:
+async def search_product_node(state: AgentState) -> dict[str, object]:
     """根据已抽取的商品和问题，尽早匹配真实可下单商品。"""
 
     order_info = state.get("order_info", {})
     product = order_info.get("product")
     fault = order_info.get("fault")
 
-    recall_query = " ".join(
+    search_query = " ".join(
         str(value)
         for value in [product, fault]
         if value
     )
-    if not recall_query:
+    if not search_query:
         output = {
             "matched_product": {},
             "product_candidates": [],
-            "product_match_status": "skipped",
-            "product_match_query": recall_query,
-            "product_match_feedback": None,
-            "step": "match_product_node",
+            "product_search_status": "skipped",
+            "product_search_query": search_query,
+            "product_search_feedback": None,
+            "step": "search_product_node",
         }
-        trace_event("node.match_product.skipped", **output)
+        trace_event("node.search_product.skipped", **output)
         return output
 
     result = await asyncio.to_thread(
-        match_product_tool.invoke,
+        search_product_tool.invoke,
         {
-            "query": recall_query,
-            "product": product,
-            "fault": fault,
-            "area": order_info.get("area"),
-            "service_type_hint": state.get("service_type"),
+            "query": search_query,
             "top_k": 3,
             "threshold": None,
         },
@@ -475,13 +471,13 @@ async def match_product_node(state: AgentState) -> dict[str, object]:
     # service_type 完全由匹配到的商品决定，匹配失败则置 null
     service_type = best_match.get("service_order_type") or None
     if service_type:
-        emit_status("match_product_node", f"已确定服务类型：{service_type}")
+        emit_status("search_product_node", f"已确定服务类型：{service_type}")
     normalized_order_info = normalize_order_defaults(
         service_type=service_type,
         order_info=order_info,
         last_user_message=state.get("last_user_message", ""),
     )
-    product_match_feedback = build_product_match_feedback(
+    product_search_feedback = build_product_search_feedback(
         order_info=normalized_order_info,
         matched_product=best_match,
         service_type=service_type,
@@ -490,15 +486,15 @@ async def match_product_node(state: AgentState) -> dict[str, object]:
     output = {
         "matched_product": best_match,
         "product_candidates": candidates,
-        "product_match_status": status,
-        "product_match_query": recall_query,
-        "product_match_feedback": product_match_feedback,
+        "product_search_status": status,
+        "product_search_query": search_query,
+        "product_search_feedback": product_search_feedback,
         "service_type": service_type,
         "order_info": normalized_order_info,
-        "step": "match_product_node",
+        "step": "search_product_node",
     }
     trace_event(
-        "node.match_product.output",
+        "node.search_product.output",
         tool_status=result.get("status"),
         tool_error_code=result.get("error_code"),
         tool_message=result.get("message"),
@@ -653,7 +649,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     retry_count = state.get("retry_count", 0)
     off_topic_count = state.get("off_topic_count", 0)
     is_topic_deviation = state.get("intent") in {"unknown", "smalltalk"}
-    product_match_feedback = state.get("product_match_feedback")
+    product_search_feedback = state.get("product_search_feedback")
 
     if is_topic_deviation:
         question = await build_topic_boundary_response(state)
@@ -664,8 +660,8 @@ async def ask_node(state: AgentState) -> dict[str, object]:
             missing_info=", ".join(missing_info),
         )
         await emit_token_text(question, step="ask_node")
-    elif product_match_feedback and missing_info:
-        question = f"{product_match_feedback}\n{build_missing_info_fallback_question(missing_info)}"
+    elif product_search_feedback and missing_info:
+        question = f"{product_search_feedback}\n{build_missing_info_fallback_question(missing_info)}"
         await emit_token_text(question, step="ask_node")
     else:
         question = await build_missing_info_question(state)
@@ -770,9 +766,9 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
         product_name=matched_product.get("service_product_name") or "未匹配到标准商品",
         product_code=matched_product.get("service_product_code") or "无",
     )
-    product_match_feedback = state.get("product_match_feedback")
-    if product_match_feedback:
-        confirmation_text = f"{product_match_feedback}\n\n{confirmation_text}"
+    product_search_feedback = state.get("product_search_feedback")
+    if product_search_feedback:
+        confirmation_text = f"{product_search_feedback}\n\n{confirmation_text}"
     await emit_token_text(confirmation_text, step="confirm_node")
 
     trace_event(
@@ -802,9 +798,9 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "order_info": {},
         "matched_product": {},
         "product_candidates": [],
-        "product_match_status": None,
-        "product_match_query": None,
-        "product_match_feedback": None,
+        "product_search_status": None,
+        "product_search_query": None,
+        "product_search_feedback": None,
         "missing_info": [],
         "retry_count": 0,
         "off_topic_count": 0,
@@ -854,9 +850,9 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "order_info": {},
         "matched_product": {},
         "product_candidates": [],
-        "product_match_status": None,
-        "product_match_query": None,
-        "product_match_feedback": None,
+        "product_search_status": None,
+        "product_search_query": None,
+        "product_search_feedback": None,
         "missing_info": [],
         "retry_count": 0,
         "off_topic_count": 0,
@@ -875,7 +871,7 @@ def route_after_intent(state: AgentState) -> str:
     if intent == "cancel_order" or order_info.get("user_cancelled"):
         return "cancel_node"
     if intent in {"create_order", "confirm_order"}:
-        return "match_product_node"
+        return "search_product_node"
     if intent in {"smalltalk", "unknown"} and not has_active_order(state):
         return "assist_node"
     return "ask_node"
@@ -897,7 +893,7 @@ def route_after_confirm(state: AgentState) -> str:
 def build_graph(checkpointer: AsyncSqliteSaver | None = None):
     graph = StateGraph(AgentState)
     graph.add_node("intent_node", intent_node)
-    graph.add_node("match_product_node", match_product_node)
+    graph.add_node("search_product_node", search_product_node)
     graph.add_node("validate_order_node", validate_order_node)
     graph.add_node("ask_node", ask_node)
     graph.add_node("assist_node", assist_node)
@@ -911,12 +907,12 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
         route_after_intent,
         {
             "cancel_node": "cancel_node",
-            "match_product_node": "match_product_node",
+            "search_product_node": "search_product_node",
             "assist_node": "assist_node",
             "ask_node": "ask_node",
         },
     )
-    graph.add_edge("match_product_node", "validate_order_node")
+    graph.add_edge("search_product_node", "validate_order_node")
     graph.add_conditional_edges(
         "validate_order_node",
         route_after_validation,
@@ -1027,16 +1023,16 @@ def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
         "order_info": order_info,
         "matched_product": matched_product,
         "product_candidates": candidates,
-        "product_match_status": state.get("product_match_status"),
-        "product_match_query": state.get("product_match_query"),
-        "product_match_feedback": state.get("product_match_feedback"),
+        "product_search_status": state.get("product_search_status"),
+        "product_search_query": state.get("product_search_query"),
+        "product_search_feedback": state.get("product_search_feedback"),
         "missing_info": state.get("missing_info") or [],
     }
 
 
 NODE_STATUS_MESSAGES = {
     "intent_node": "正在理解您的需求并提取订单信息...",
-    "match_product_node": "正在匹配可下单的标准商品...",
+    "search_product_node": "正在匹配可下单的标准商品...",
     "validate_order_node": "正在检查订单信息是否完整...",
     "ask_node": "正在生成追问问题...",
     "confirm_node": "正在整理订单确认信息...",
