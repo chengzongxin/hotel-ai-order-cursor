@@ -101,6 +101,7 @@ def get_assist_agent():
         system_prompt=(
             "你是酒店 AI 下单助手的辅助 Agent。"
             "你可以回答用户的简单问题，也可以在需要时调用工具查询。"
+            "如果用户询问某个商品或设备是否有维修服务，可以调用 search_product_tool 查询商品库。"
             "不要直接提交订单；如果用户要下单，请引导用户提供房号、商品和问题。"
         ),
         middleware=[
