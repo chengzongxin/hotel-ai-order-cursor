@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { createSessionId } from './utils/sessionId'
 
 marked.setOptions({ breaks: true })
 
@@ -75,7 +76,7 @@ interface SessionSummary {
 const SESSION_KEY = 'order_voice_session_id'
 const HISTORY_KEY = 'order_voice_history_sessions'
 
-const sessionId = ref(localStorage.getItem(SESSION_KEY) || crypto.randomUUID())
+const sessionId = ref(localStorage.getItem(SESSION_KEY) || createSessionId())
 const inputText = ref('')
 const isListening = ref(false)
 const isSending = ref(false)
@@ -412,7 +413,7 @@ function summarizeCurrentSession() {
 
 function createNewSession() {
   summarizeCurrentSession()
-  sessionId.value = crypto.randomUUID()
+  sessionId.value = createSessionId()
   localStorage.setItem(SESSION_KEY, sessionId.value)
   inputText.value = ''; errorMessage.value = ''; isListening.value = false; isSending.value = false
   messages.value = []; resetOrder(); showHistory.value = false
