@@ -17,8 +17,17 @@ def new_session() -> str:
 
 
 async def chat(session_id: str, message: str) -> dict:
-    """一次对话，返回 run_agent 结果。"""
-    return await run_agent(user_message=message, session_id=session_id)
+    """一次对话，打印用户输入和 AI 回复，返回 run_agent 结果。"""
+    result = await run_agent(user_message=message, session_id=session_id)
+    preview = result.get("order_preview") or {}
+    print(f"\n  > 用户: {message}")
+    print(f"  < AI  : {result.get('answer', '')}")
+    if preview:
+        print(f"    order_info   : {preview.get('order_info')}")
+        print(f"    missing_info : {preview.get('missing_info')}")
+        print(f"    service_type : {preview.get('service_type')}")
+        print(f"    status       : {preview.get('status')}")
+    return result
 
 
 def order_info(result: dict) -> dict:
