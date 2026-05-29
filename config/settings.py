@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     qwen_embedding_batch_size: int = 10
     qwen_embedding_timeout_seconds: float = 30.0
 
-    product_match_threshold: float = 0.55
+    product_match_threshold: float = 0.3
 
     @cached_property
     def database_url(self) -> str:

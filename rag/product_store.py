@@ -113,7 +113,11 @@ def get_product_store() -> ProductVectorStore:
 
 if __name__ == "__main__":
     store = ProductVectorStore()
-    results = store.search("门锁打不开")
+    query = "浴室门推不动"
+    results = store.search(query)
     for r in results:
-        print(r["service_product_name"], r["score"])
+        print("商品: ", r["service_product_name"])
+        print("故障: ", r["fault_phenomenon"])
+        print("分数: ", r["score"])
+        print("描述: ", r)
         print("-" * 20)
