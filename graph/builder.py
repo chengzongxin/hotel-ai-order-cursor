@@ -7,8 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models.chat_models import BaseChatModel
+from graph.llm import get_llm
+
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.config import get_stream_writer
@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from config.logging import trace_event
 from config.settings import settings
-from graph.agent_runtime import get_assist_agent
+from graph.agent import get_assist_agent
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
 from tools.product_search import search_product_tool
@@ -100,17 +100,6 @@ def to_prompt_text(value: object) -> str:
         return value
     return json.dumps(value, ensure_ascii=False, default=str)
 
-
-@lru_cache
-def get_llm() -> BaseChatModel:
-    return init_chat_model(
-        model=settings.openai_model,
-        model_provider="openai",
-        base_url=settings.openai_base_url,
-        api_key=settings.openai_api_key,
-        temperature=settings.openai_temperature,
-        model_kwargs={"extra_body": {"enable_thinking": False}},
-    )
 
 
 def format_messages(messages: list[BaseMessage]) -> str:

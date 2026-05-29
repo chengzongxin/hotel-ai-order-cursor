@@ -1,9 +1,7 @@
 import inspect
 import time
-from functools import lru_cache
 from typing import Any
 
-from langchain.agents import create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ModelRetryMiddleware,
@@ -12,23 +10,8 @@ from langchain.agents.middleware import (
     wrap_model_call,
     wrap_tool_call,
 )
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models.chat_models import BaseChatModel
 
 from config.logging import trace_event
-from config.settings import settings
-from tools.registry import get_tools
-
-
-@lru_cache
-def get_agent_llm() -> BaseChatModel:
-    return init_chat_model(
-        model=settings.openai_model,
-        model_provider="openai",
-        base_url=settings.openai_base_url,
-        api_key=settings.openai_api_key,
-        temperature=settings.openai_temperature,
-    )
 
 
 @wrap_model_call
@@ -85,27 +68,11 @@ async def log_tool_call(request: Any, handler: Any) -> Any:
     return result
 
 
-@lru_cache
-def get_assist_agent():
-    """官方 LangChain middleware agent，用于非主下单流程的辅助问答。"""
-
-    return create_agent(
-        model=get_agent_llm(),
-        tools=get_tools(),
-        system_prompt=(
-            "你是酒店 AI 下单助手的辅助 Agent。"
-            "你可以回答用户的简单问题，也可以在需要时调用工具查询。"
-            "如果用户询问商品或设备相关信息，可调用 search_product_tool 查询商品库，"
-            "商品库涵盖维修、安装、测量、托管维修等服务类型。"
-            "不要直接提交订单；如果用户要下单，请引导用户提供房号、商品和问题。"
-        ),
-        middleware=[
-            log_model_call,
-            log_tool_call,
-            ModelRetryMiddleware(max_retries=1),
-            ToolRetryMiddleware(max_retries=1),
-            ModelCallLimitMiddleware(run_limit=3, exit_behavior="end"),
-            ToolCallLimitMiddleware(run_limit=3, exit_behavior="continue"),
-        ],
-        name="assist_agent",
-    )
+AGENT_MIDDLEWARE = [
+    log_model_call,
+    log_tool_call,
+    ModelRetryMiddleware(max_retries=1),
+    ToolRetryMiddleware(max_retries=1),
+    ModelCallLimitMiddleware(run_limit=3, exit_behavior="end"),
+    ToolCallLimitMiddleware(run_limit=3, exit_behavior="continue"),
+]
