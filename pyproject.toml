@@ -23,6 +23,9 @@ dependencies = [
     "openpyxl>=3.1,<4",
     "httpx>=0.28.1,<1",
     "langchain-chroma>=0.2,<1",
+    "langchain-community>=0.4.2",
+    "tavily-python>=0.7.25",
+    "langchain-tavily>=0.2.18",
 ]
 
 [dependency-groups]

@@ -75,6 +75,8 @@ class Settings(BaseSettings):
 
     product_search_threshold: float = 0.3
 
+    tavily_api_key: str = Field(default="", repr=False)
+
     @cached_property
     def database_url(self) -> str:
         return (
