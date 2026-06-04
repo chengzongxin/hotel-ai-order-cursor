@@ -6,41 +6,54 @@
 
 > **一个 LangGraph 节点 → 一类 Prompt → 一个同名子目录**
 
-| LangGraph 节点 | 子目录 | 主 Prompt（示例） |
+| LangGraph 节点 | 子目录 | Prompt 文件 |
 | --- | --- | --- |
 | `intent_node` | `prompts/intent/` | `intent/intent.md` |
-| `ask_node` | `prompts/ask/` | `ask/missing_info.md` 等 |
+| `ask_node` | `prompts/ask/` | `missing_info.md`、`off_topic.md` 等 |
 | `assist_node` | `prompts/assist/` | `assist/assist.md` |
 | `confirm_node` | `prompts/confirm/` | `confirm/confirm.md` |
-| `submit_node` | `prompts/confirm/` | `confirm/submitted.md`（与确认同属下单收尾） |
+| `submit_node` | `prompts/submit/` | `submit/submit.md` |
+| `cancel_node` | `prompts/cancel/` | `cancel/cancel.md` |
+
+**不需要 Prompt 子目录的节点**（纯逻辑 / 工具，不调用 LLM Prompt）：
+
+| 节点 | 说明 |
+| --- | --- |
+| `search_product_node` | 调用 `search_product_tool` 做向量检索 |
+| `validate_order_node` | 校验必填字段、递增 `retry_count` |
 
 说明：
 
-- 子目录名去掉 `_node` 后缀，与节点一一对应（`intent_node` → `intent/`）。
-- 该节点只有一份主 Prompt 时，可用 **`{目录}/{目录}.md`**（如 `intent/intent.md`、`assist/assist.md`）。
-- 同一节点有多份 Prompt 时，仍在同一子目录下，用功能名区分（如 `ask/missing_info.md`、`ask/unknown_fallback.md`）。
-- 跨节点但强相关的 Prompt 可放在最贴近的目录（如 `safety/off_topic.md` 服务于 `ask_node` 的偏题分支）。
-- 新增节点时：先建 `prompts/<节点名>/`，再在代码里用 `render_prompt` / `load_prompt` 引用，不要把大段 Prompt 写进 Python。
-
-## 其它约定
-
-- **模板变量**：使用 `{{variable}}`，由 `render_prompt` 替换。
-- **路径同步**：改文件名或目录后，更新 `graph/builder.py`、`graph/agent.py` 与本文件清单。
+- 子目录名去掉 `_node` 后缀（`intent_node` → `intent/`）。
+- 该节点只有一份主 Prompt 时，可用 **`{目录}/{目录}.md`**（如 `intent/intent.md`、`cancel/cancel.md`）。
+- 同一节点多份 Prompt 时，在同一子目录用功能名区分（如 `ask/off_topic.md`）。
+- 节点内仍有少量**固定兜底文案**写在 Python（见下文「未文件化」），新增时优先放进对应子目录。
 
 ## 文件清单
 
-| 路径 | 节点 / 用途 |
+| 路径 | 节点 |
 | --- | --- |
-| `intent/intent.md` | `intent_node`：意图识别 + 槽位抽取 |
-| `ask/missing_info.md` | `ask_node`：LLM 生成缺字段追问 |
-| `ask/missing_info_retry.md` | `ask_node`：超过重试次数后的固定追问 |
-| `ask/unknown_fallback.md` | `ask_node`：偏题引导 LLM 失败时的兜底文案 |
-| `safety/off_topic.md` | `ask_node`：进行中订单时的偏题引导（LLM） |
-| `confirm/confirm.md` | `confirm_node`：订单确认卡片 |
-| `confirm/submitted.md` | `submit_node`：提交成功回复 |
-| `assist/assist.md` | `assist_node`：辅助 Agent 系统提示 |
+| `intent/intent.md` | `intent_node` |
+| `ask/missing_info.md` | `ask_node` |
+| `ask/missing_info_retry.md` | `ask_node` |
+| `ask/off_topic.md` | `ask_node` |
+| `ask/unknown_fallback.md` | `ask_node` |
+| `assist/assist.md` | `assist_node` |
+| `confirm/confirm.md` | `confirm_node` |
+| `submit/submit.md` | `submit_node`（仅提交成功） |
+| `cancel/cancel.md` | `cancel_node` |
+
+## 未文件化（仍在 Python）
+
+| 位置 | 说明 |
+| --- | --- |
+| `build_missing_info_fallback_question` | 缺字段固定追问（含时间、货物状态） |
+| `build_product_search_feedback` | 商品匹配成功前缀 |
+| `assist_node` 空回复兜底 | 引导用户提供房号、商品、问题 |
+| `submit_node` 失败分支 | 未真提交、缺参数、地址接口失败等 |
+| `build_topic_boundary_response` | `next_question` 部分硬编码 |
 
 ## 修改注意
 
 - 改 `.md` 后需重启进程（`load_prompt` 带 `@lru_cache`）。
-- 同步更新 `graph/builder.py` / `graph/agent.py` 中的路径与占位变量名。
+- 同步更新 `graph/builder.py`、`graph/agent.py` 与本文件。

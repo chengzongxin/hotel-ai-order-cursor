@@ -586,7 +586,7 @@ async def build_topic_boundary_response(state: AgentState) -> str:
     if active_order and not missing_info and not state.get("order_info"):
         next_question = "请说房号和故障。"
     prompt = render_prompt(
-        "safety/off_topic.md",
+        "ask/off_topic.md",
         last_user_message=get_last_human_message(state.get("messages", [])),
         active_order=active_order,
         status=state.get("status") or "idle",
@@ -749,7 +749,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
 async def cancel_node(state: AgentState) -> dict[str, object]:
     """取消当前预下单，避免旧订单继续参与后续对话。"""
 
-    answer = "已取消本次订单。"
+    answer = render_prompt("cancel/cancel.md")
     await emit_token_text(answer, step="cancel_node")
     output = {
         "messages": [AIMessage(content=answer)],
@@ -806,7 +806,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "real_order_result": submit_data,
     }
     answer = render_prompt(
-        "confirm/submitted.md",
+        "submit/submit.md",
         order_id=order_id,
         service_type=format_service_type(state.get("service_type"), state.get("order_info", {})),
         order_info=order_info,
