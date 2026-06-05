@@ -1,0 +1,60 @@
+{
+  "请求接口": "/app-api/order/company-managed-repair-order/create",
+  "请求数据": {
+    "contacts": "宗含含",
+    "phone": "15580316746",
+    "ideName": "",
+    "lon": 113.919634,
+    "lat": 22.495801,
+    "province": "广东省",
+    "city": "深圳市",
+    "area": null,
+    "provinceCode": "440000000000",
+    "cityCode": "440300000000",
+    "areaCode": null,
+    "address": "南山大厦",
+    "hotelName": "系统测试企业",
+    "houseNumber": "c座109",
+    "responseTime": 30,
+    "comboCardId": 1,
+    "responseTimeUnit": "MINUTES",
+    "emergencyFlag": 0,
+    "orderDetailList": [
+      {
+        "spuTypeId": 19,
+        "firstAreaId": 1545054012,
+        "firstAreaName": "客房",
+        "roomNum": "5B_01",
+        "imageList": "",
+        "orderSpuList": [
+          {
+            "spuId": 1675,
+            "secondAreaId": 1545054022,
+            "secondAreaName": "客房区域",
+            "templateCode": "FWSP01546",
+            "templateName": "门五金(中修)",
+            "templatePhoto": "https://hxc1.obs.cn-south-1.myhuaweicloud.com:443/userWeb/image/2026-03-31/0fcbbe84-1b94-4d06-be2f-bebad577ebce_门五金.jpg",
+            "num": 1,
+            "unit": "个",
+            "unitType": "0",
+            "spuFaultPhenomenonList": [
+              {
+                "faultPhenomenonId": 1545054076,
+                "faultPhenomenonName": "把手坏",
+                "commonRepairType": [1, 2]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "confirmDuplicateSubmit": true
+  },
+  "响应数据": {
+    "code": 200,
+    "data": {
+      "orderNo": "DD20260604000002"
+    },
+    "msg": ""
+  }
+}

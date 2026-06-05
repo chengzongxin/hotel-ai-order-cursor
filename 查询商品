@@ -1,0 +1,55 @@
+{
+    "code": 200,
+    "data": {
+        "list": [
+            {
+                "id": 1619,
+                "code": "FWSP01490",
+                "name": "商用油烟机（大修）",
+                "categoryName": "厨房电器/商用油烟机",
+                "firstCategoryId": 427,
+                "secondCategoryId": 433,
+                "erpCategoryList": [
+                    {
+                        "erpCategoryCode": "PL6803",
+                        "erpCategoryName": "商用油烟机"
+                    }
+                ],
+                "typeId": 18,
+                "typeName": "维修",
+                "measureUnitId": 16,
+                "measureUnitName": "台",
+                "measureUnitType": null,
+                "icon": "",
+                "limitBuyType": 3,
+                "limitBuyStart": 9999.000,
+                "limitBuyEnd": null,
+                "actualPrice": 50000,
+                "priceStatus": 0,
+                "remark": "油烟机风机更换",
+                "createTime": "2026-03-31 15:53:00",
+                "updateTime": "2026-04-01 00:29:34",
+                "creatorName": "陈晓姿",
+                "updaterName": "陈晓姿",
+                "status": 0,
+                "level": 1,
+                "sort": 0,
+                "repairCategory": "MAJOR",
+                "spuType": 1,
+                "faultPhenomenonList": [
+                    {
+                        "managedRepairFaultPhenomenonId": 1545054199,
+                        "managedRepairFaultPhenomenonName": "风机损坏",
+                        "commonRepairType": [
+                            1,
+                            2
+                        ]
+                    }
+                ],
+                "areaList": []
+            }
+        ],
+        "total": 1
+    },
+    "msg": ""
+}

@@ -77,6 +77,17 @@ class Settings(BaseSettings):
 
     tavily_api_key: str = Field(default="", repr=False)
 
+    admin_api_base_url: str = "http://192.168.2.223:18080"
+
+    managed_repair_hotel_name: str = ""
+    managed_repair_combo_card_id: int = 1
+    managed_repair_response_time: int = 30
+    managed_repair_response_time_unit: str = "MINUTES"
+    managed_repair_first_area_id: int | None = None
+    managed_repair_first_area_name: str = ""
+    managed_repair_second_area_id: int | None = None
+    managed_repair_second_area_name: str = ""
+
     user_app_base_url: str = "https://userapp.hxcsz.com"
     user_app_access_token: str = Field(default="", repr=False)
     user_app_tenant_id: str = ""
