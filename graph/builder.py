@@ -14,7 +14,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from config.logging import trace_event
+from utils.logger_handler import trace_logger
 from config.settings import settings
 from graph.agent import get_assist_agent
 from graph.expected_time import (
@@ -299,7 +299,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     """一次性完成意图识别和订单信息抽取。"""
 
     emit_status("intent_node", "正在理解您的需求...")
-    trace_event(
+    trace_logger(
         "node.intent.input",
         last_user_message=get_last_human_message(state["messages"]),
         message_count=len(state["messages"]),
@@ -392,7 +392,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "step": "intent_node",
         "last_user_message": last_user_message,
     }
-    trace_event("node.intent.output", **output)
+    trace_logger("node.intent.output", **output)
     if intent in {"create_order", "confirm_order"}:
         emit_status("intent_node", "已完成需求理解，准备匹配商品...")
     return output
@@ -423,7 +423,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
             "product_search_feedback": None,
             "step": "search_product_node",
         }
-        trace_event("node.search_product.skipped", **output)
+        trace_logger("node.search_product.skipped", **output)
         return output
 
     result = await asyncio.to_thread(
@@ -467,7 +467,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         "order_info": normalized_order_info,
         "step": "search_product_node",
     }
-    trace_event(
+    trace_logger(
         "node.search_product.output",
         tool_status=result.get("status"),
         tool_error_code=result.get("error_code"),
@@ -509,7 +509,7 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
         "status": "collecting" if missing_info else "confirming",
         "step": "validate_order_node",
     }
-    trace_event(
+    trace_logger(
         "node.validate_order.output",
         service_type=service_type,
         required_fields=required_fields,
@@ -640,7 +640,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     else:
         question = await build_missing_info_question(state)
 
-    trace_event(
+    trace_logger(
         "node.ask.output",
         question=question,
         missing_info=missing_info,
@@ -670,7 +670,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
 async def assist_node(state: AgentState) -> dict[str, object]:
     """使用 LangChain 官方 create_agent middleware 处理非主下单咨询。"""
 
-    trace_event(
+    trace_logger(
         "node.assist.input",
         message_count=len(state.get("messages", [])),
         intent=state.get("intent"),
@@ -702,7 +702,7 @@ async def assist_node(state: AgentState) -> dict[str, object]:
         answer = str(answer_message.content) if answer_message else "如果需要下单，请告诉我房号、商品和问题。"
         await emit_token_text(answer, step="assist_node")
 
-    trace_event(
+    trace_logger(
         "node.assist.output",
         answer=str(answer),
         message_count=len(latest_messages),
@@ -722,7 +722,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
     matched_product = state.get("matched_product", {})
 
     if order_info.get("user_confirmed"):
-        trace_event("node.confirm.skip", reason="user_confirmed")
+        trace_logger("node.confirm.skip", reason="user_confirmed")
         return {
             "step": "confirm_node",
         }
@@ -745,7 +745,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
         confirmation_text = f"{product_search_feedback}\n\n{confirmation_text}"
     await emit_token_text(confirmation_text, step="confirm_node")
 
-    trace_event(
+    trace_logger(
         "node.confirm.output",
         confirmation_text=confirmation_text,
         order_info=order_info,
@@ -779,7 +779,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "retry_count": 0,
         "off_topic_count": 0,
     }
-    trace_event(
+    trace_logger(
         "node.cancel.output",
         answer=answer,
         previous_status=state.get("status"),
@@ -872,7 +872,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "retry_count": 0,
         "off_topic_count": 0,
     }
-    trace_event(
+    trace_logger(
         "node.submit.output",
         answer=answer,
         order_info=order_info,
@@ -1098,7 +1098,7 @@ async def stream_agent_events(
     active_user = require_user(user)
     active_session_id = session_id or str(uuid4())
 
-    trace_event(
+    trace_logger(
         "agent.stream.start",
         session_id=active_session_id,
         user_id=active_user.user_id,
@@ -1208,7 +1208,7 @@ async def stream_agent_events(
                     as_node="ask_node",
                 )
 
-        trace_event(
+        trace_logger(
             "agent.stream.end",
             session_id=active_session_id,
             answer=answer,
@@ -1231,7 +1231,7 @@ async def stream_agent_events(
     except SessionAccessError:
         raise
     except Exception as exc:
-        trace_event(
+        trace_logger(
             "agent.stream.error",
             session_id=active_session_id,
             error=repr(exc),
@@ -1250,7 +1250,7 @@ async def run_agent(
     active_user = require_user(user)
     active_session_id = session_id or str(uuid4())
 
-    trace_event(
+    trace_logger(
         "agent.run.start",
         session_id=active_session_id,
         user_id=active_user.user_id,
@@ -1284,7 +1284,7 @@ async def run_agent(
                 as_node="ask_node",
             )
 
-    trace_event(
+    trace_logger(
         "agent.run.end",
         session_id=active_session_id,
         answer=answer,

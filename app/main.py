@@ -4,10 +4,10 @@ from fastapi import FastAPI
 
 from api.routes import router
 from config.database import close_database, init_database
-from config.logging import setup_logging
 from config.settings import settings
+from utils.logger_handler import logger
 
-setup_logging()
+logger.info("Starting %s", settings.app_name)
 
 
 @asynccontextmanager
