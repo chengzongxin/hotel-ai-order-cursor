@@ -153,7 +153,7 @@ async function doSearch() {
     })
     if (!res.ok) throw new Error(`请求失败 ${res.status}`)
     const data = await res.json()
-    searchResults.value = data.results
+    searchResults.value = data.products
     lastQuery.value     = data.query
   } catch (e) {
     searchError.value = e instanceof Error ? e.message : '检索失败'

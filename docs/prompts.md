@@ -48,7 +48,7 @@
 | 位置 | 说明 |
 | --- | --- |
 | `build_missing_info_fallback_question` | 缺字段固定追问（含时间、货物状态） |
-| `build_product_search_feedback` | 商品匹配成功前缀 |
+| `build_product_search_feedback` | 商品匹配成功前缀（`graph/products.py`，对话气泡与 API 推导共用） |
 | `assist_node` 空回复兜底 | 引导用户提供房号、商品、问题 |
 | `submit_node` 失败分支 | 未真提交、缺参数、地址接口失败等 |
 | `build_topic_boundary_response` | `next_question` 部分硬编码 |

@@ -109,7 +109,7 @@ Chroma 向量排名
     ↓
 has_fault 惩罚（安装/测量类扣分）
     ↓
-best_match.service_order_type → service_type
+products[0].service_order_type → service_type
 ```
 
 ---
@@ -223,7 +223,7 @@ USER_APP_DEFAULT_ADDRESS=...
 | --- | --- | --- |
 | **真实下单** | 仅 **托管维修** 有完整 API 对接 | 单次安装 / 单次测量 / 单次维修尚无 create 接口 |
 | **下单开关** | 默认 `USER_APP_SUBMIT_ENABLED=false` | 生产需配 token、默认地址、酒店名、区域 ID 等 |
-| **商品候选** | 后端有 `product_candidates` 状态字段 | 前端 **不能选 Top-N**，低置信只能继续对话 |
+| **商品候选** | 状态字段 `products` + `selected_product_code` | 前端 **尚未实现卡片点选 UI**（后端 `/select-product` 已就绪） |
 | **订单修改** | Prompt 说「直接说明要改哪里」 | 无独立 `modify_order` 意图/节点，靠 intent 重新抽取 |
 | **conversation_summary** | State 有字段，`memory/sqlite_memory.py` 有压缩逻辑 | **主图未接入**，长对话仍靠全量 messages |
 | **PostgreSQL 日志** | `save_conversation_log` 可选写入 | 默认 `POSTGRES_ENABLED=false` |
@@ -253,7 +253,7 @@ USER_APP_DEFAULT_ADDRESS=...
 
 | 待实现项 | 说明 |
 | --- | --- |
-| 低置信商品让用户点选 | 前端 + 状态机支持选 `product_candidates` |
+| 低置信商品让用户点选 | 前端商品卡片 + `POST /select-product` |
 | ASR 容错 | 文档有 asr_001/002 用例，代码无置信度/二次确认逻辑 |
 | 确认/取消短路 | `status=confirming` 时减少重复 intent LLM 调用 |
 | 长对话压缩 | 接入 `conversation_summary` 到 intent/ask 节点 |

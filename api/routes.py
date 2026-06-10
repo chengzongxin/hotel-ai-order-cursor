@@ -12,10 +12,18 @@ from graph.builder import (
     get_checkpoint_messages,
     get_checkpoint_state,
     run_agent,
+    select_product_in_session,
     stream_agent_events,
 )
 from rag.spu_loader import SpuExcelLoader
-from schemas.chat import ChatRequest, ChatResponse, HistoryResponse, MessageItem
+from schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    HistoryResponse,
+    MessageItem,
+    SelectProductRequest,
+    SelectProductResponse,
+)
 from schemas.product import (
     ProductItem,
     ProductListResponse,
@@ -57,6 +65,11 @@ async def stream_chat(
     request: ChatRequest,
     user: UserContext = Depends(get_current_user),
 ) -> StreamingResponse:
+    """流式对话，响应为 NDJSON（每行一个 JSON 事件）。
+
+    事件类型：session / status / preview / token / final / error。
+    字段定义见 `docs/api_order_preview.md`。
+    """
     async def event_lines() -> AsyncIterator[str]:
         try:
             async for event in stream_agent_events(
@@ -79,6 +92,26 @@ async def stream_chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/chat/{session_id}/select-product", response_model=SelectProductResponse)
+async def select_product(
+    session_id: str,
+    request: SelectProductRequest,
+    user: UserContext = Depends(get_current_user),
+) -> SelectProductResponse:
+    """前端点选商品卡片后调用，更新当前会话的选中商品。"""
+    try:
+        result = await select_product_in_session(
+            session_id=session_id,
+            product_code=request.product_code,
+            user=user,
+        )
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return SelectProductResponse(**result)
 
 
 @router.get("/chat/{session_id}/history", response_model=HistoryResponse)
@@ -145,8 +178,8 @@ async def search_products(request: ProductSearchRequest) -> ProductSearchRespons
         {"query": request.query, "top_k": request.top_k, "threshold": request.threshold},
     )
     data = result.get("data", {})
-    candidates = data.get("candidates") or []
-    results = [
+    products = data.get("products") or []
+    mapped_products = [
         ProductSearchResult(
             score=r["score"],
             service_product_code=r["service_product_code"],
@@ -158,6 +191,10 @@ async def search_products(request: ProductSearchRequest) -> ProductSearchRespons
             price=r["price"],
             unit=r["unit"],
         )
-        for r in candidates
+        for r in products
     ]
-    return ProductSearchResponse(query=data.get("query", request.query), count=len(results), results=results)
+    return ProductSearchResponse(
+        query=data.get("query", request.query),
+        count=len(mapped_products),
+        products=mapped_products,
+    )

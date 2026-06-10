@@ -33,25 +33,16 @@ class AgentState(TypedDict, total=False):
     # 最近一次已提交的订单，供用户追问“刚才那个单号”时使用。
     last_order: dict[str, Any]
 
-    # 当前匹配到的真实商品，来自商品匹配工具。
-    matched_product: dict[str, Any]
+    # 商品检索结果（按相似度排序）。
+    products: list[dict[str, Any]]
+
+    # 当前选中的商品编码；未指定时默认取 products[0]。
+    selected_product_code: str | None
 
     # 按用户端 App 结构构造出的真实下单参数，以及真实接口返回结果。
     real_order_payload: dict[str, Any]
     real_order_result: dict[str, Any]
     real_order_missing_fields: list[str]
-
-    # 商品候选列表，低置信度时可给前端或人工选择。
-    product_candidates: list[dict[str, Any]]
-
-    # 商品搜索状态：skipped、success、no_match、error。
-    product_search_status: str | None
-
-    # 本轮用于商品搜索的查询文本。
-    product_search_query: str | None
-
-    # 商品搜索成功后给用户看的反馈文案。
-    product_search_feedback: str | None
 
     # 仍然缺失、需要继续追问用户的订单信息名。
     missing_info: list[str]

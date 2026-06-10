@@ -87,12 +87,12 @@ flowchart TD
 | `status` | 订单生命周期，例如 `idle`、`collecting`、`confirming`、`submitted`、`cancelled` |
 | `order_info` | 从用户输入中抽取出的订单信息 |
 | `missing_info` | 仍需追问的订单信息字段 |
-| `matched_product` | 匹配到的标准商品 |
-| `product_candidates` | 商品候选列表 |
-| `product_search_status` | 商品匹配状态：`skipped`、`success`、`no_match`、`error` |
-| `product_search_query` | 本轮用于商品匹配的查询文本 |
+| `products` | 商品检索结果（按相似度排序） |
+| `selected_product_code` | 当前选中的商品编码；未指定时默认 Top1 |
 | `last_order` | 最近一次已提交订单 |
 | `off_topic_count` | 用户偏离当前下单任务的次数 |
+
+详细 API 响应字段见 [docs/api_order_preview.md](docs/api_order_preview.md)。
 
 重要约定：
 
@@ -215,7 +215,7 @@ SQLite Checkpoint
 2. **BM25 关键词过滤**：用商品名的 BM25 倒排索引（jieba 分词）圈定候选池，排除与 query 无任何关键词重叠的商品（如查"空调漏水"时水柜因名字里没有"空调"而被过滤）。
 3. **向量排名**：Chroma 余弦相似度对过滤后的候选排序，过滤低分结果。
 4. **故障惩罚**（`has_fault=True`）：用户描述了故障时，对无故障描述的商品（纯安装/测量类）扣 0.15 分，确保维修商品优于同名的安装商品（如"水龙头漏水"找维修而非安装）。
-5. `best_match.service_order_type` 即为本次订单的 `service_type`，后续必填字段由此决定。
+5. `products[0].service_order_type` 即为本次订单的 `service_type`，后续必填字段由此决定。
 
 ## 必填字段与追问逻辑
 
@@ -281,15 +281,27 @@ curl -X POST http://localhost:8000/api/chat \
       "area": "卫生间",
       "urgency": "medium"
     },
-    "matched_product": {
-      "service_product_code": "FWSP01468",
-      "service_product_name": "钥匙柜（小修）",
-      "service_order_type": "单次维修服务"
+    "products": {
+      "status": "success",
+      "query": "门锁 打不开 卫生间",
+      "selected_code": "FWSP01468",
+      "items": [
+        {
+          "code": "FWSP01468",
+          "name": "钥匙柜（小修）",
+          "service_type": "单次维修服务",
+          "rank": 1,
+          "is_recommended": true,
+          "is_selected": true
+        }
+      ]
     },
-    "product_candidates": [],
-    "product_search_status": "success",
-    "product_search_query": "门锁 打不开 卫生间",
-    "missing_info": []
+    "missing_info": [],
+    "submission": {
+      "payload": {},
+      "result": {},
+      "missing_fields": []
+    }
   }
 }
 ```
@@ -309,6 +321,16 @@ curl -X POST http://localhost:8000/api/chat \
 ```bash
 curl http://localhost:8000/api/chat/{session_id}/history
 ```
+
+### 选择商品（前端点选卡片）
+
+```bash
+curl -X POST http://localhost:8000/api/chat/{session_id}/select-product \
+  -H "Content-Type: application/json" \
+  -d '{"product_code":"FWSP01537"}'
+```
+
+字段说明见 [docs/api_order_preview.md](docs/api_order_preview.md)。
 
 ### 清空会话
 
@@ -483,7 +505,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 3. 不要重新引入旧字段：`repair_order`、`current_order_type`、`extracted_fields`、`missing_fields`、`slots`、`order_kind`。
 4. 普通用户确认/取消不要使用 LangGraph `interrupt()`，应通过 `intent` 和路由进入 `submit_node` 或 `cancel_node`。
 5. Prompt 必须文件化，优先修改 `prompts/`，不要把大段 Prompt 写死在 Python 里。目录规则见 `docs/prompts.md`：**一个节点 → 一个同名子目录**（如 `intent_node` → `prompts/intent/`）。
-6. 商品检索主路径是 `rag/product_store.py`（`ProductVectorStore` / Chroma）。工具层入口是 `tools/product_search.py::search_product_tool`，节点是 `search_product_node`，HTTP 接口 `/api/products/search` 也统一走这个工具，状态字段用 `product_search_*` 前缀。
+6. 商品检索主路径是 `rag/product_store.py`（`ProductVectorStore` / Chroma）。工具层入口是 `tools/product_search.py::search_product_tool`，节点是 `search_product_node`，HTTP 接口 `/api/products/search` 也统一走这个工具；检索元数据（`status` / `query` / `feedback`）在 API 层由 `products` 推导，不再单独写入 state。
 7. Excel 原始字段 `service_product_code`、`service_product_name`、`service_order_type` 是业务数据列名，可以保留。
 8. 修改状态字段时，需要同步更新：
    - `graph/state.py`

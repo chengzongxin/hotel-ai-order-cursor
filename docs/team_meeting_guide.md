@@ -197,7 +197,7 @@ LLM 结构化输出，字段包括：
     → BM25 关键词过滤
     → Chroma 向量排序
     → 故障惩罚（有故障时降低安装/测量类得分）
-    → best_match.service_order_type → service_type
+    → products[0].service_order_type → service_type
 ```
 
 数据源：`assets/spu.xlsx`，索引持久化在 `data/chroma_db/`。
@@ -307,6 +307,7 @@ sequenceDiagram
 |------|------|------|------|
 | POST | `/api/chat` | 同步对话 | 需要 |
 | POST | `/api/chat/stream` | 流式对话（推荐） | 需要 |
+| POST | `/api/chat/{session_id}/select-product` | 点选商品卡片 | 需要 |
 | GET | `/api/chat/{session_id}/history` | 历史 + order_preview | 需要 |
 | DELETE | `/api/chat/{session_id}` | 清空会话 | 需要 |
 | GET | `/api/products` | 商品列表（调试） | 无 |

@@ -41,7 +41,7 @@ has_fault 惩罚（当用户描述了故障时）
   确保维修商品优先于同名的安装商品
   例："水龙头漏水" → "淋浴龙头/花洒(安装)" 扣分后低于 "台盆龙头(小修)"
     ↓
-best_match.service_order_type → 本次订单 service_type
+products[0].service_order_type → 本次订单 service_type
 ```
 
 ### 检索参数
@@ -110,14 +110,15 @@ PRODUCT_SEARCH_THRESHOLD=0.3
   "status": "success",
   "data": {
     "query": "马桶 堵塞",
-    "best_match": {
-      "score": 0.8231,
-      "service_product_code": "FWSP00001",
-      "service_product_name": "马桶疏通",
-      "service_order_type": "单次维修服务",
-      "fault_phenomenon": "堵塞"
-    },
-    "candidates": [],
+    "products": [
+      {
+        "score": 0.8231,
+        "service_product_code": "FWSP00001",
+        "service_product_name": "马桶疏通",
+        "service_order_type": "单次维修服务",
+        "fault_phenomenon": "堵塞"
+      }
+    ],
     "count": 1
   }
 }

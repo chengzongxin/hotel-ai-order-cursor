@@ -1,6 +1,6 @@
-from typing import Any
-
 from pydantic import BaseModel, Field
+
+from schemas.order_preview import OrderPreview
 
 
 class ChatRequest(BaseModel):
@@ -14,7 +14,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
-    order_preview: dict[str, Any] | None = None
+    order_preview: OrderPreview | None = None
 
 
 class MessageItem(BaseModel):
@@ -26,4 +26,19 @@ class HistoryResponse(BaseModel):
     session_id: str
     messages: list[MessageItem]
     conversation_summary: str
-    order_preview: dict[str, Any] | None = None
+    order_preview: OrderPreview | None = None
+
+
+class SelectProductRequest(BaseModel):
+    product_code: str = Field(
+        ...,
+        min_length=1,
+        description="要选择的商品编码，对应 order_preview.products.items[].code",
+        examples=["FWSP01537"],
+    )
+
+
+class SelectProductResponse(BaseModel):
+    session_id: str
+    order_preview: OrderPreview
+    message: str = Field(..., description="选择结果说明")

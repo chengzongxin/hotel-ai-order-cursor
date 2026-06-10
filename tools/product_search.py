@@ -22,7 +22,7 @@ def search_product_tool(
     """在商品库中向量检索最匹配的可下单商品，返回商品编码和订单类型等标准下单参数。"""
     try:
         store = get_product_store()
-        candidates = store.search(query=query, top_k=top_k, threshold=threshold, has_fault=has_fault)
+        products = store.search(query=query, top_k=top_k, threshold=threshold, has_fault=has_fault)
     except (FileNotFoundError, ValueError) as exc:
         return error_response(
             error_code=ToolErrorCode.INVALID_INPUT,
@@ -36,12 +36,10 @@ def search_product_tool(
             data={"query": query},
         )
 
-    best_match = candidates[0] if candidates else None
     return success_response(
         data={
             "query": query,
-            "best_match": best_match,
-            "candidates": candidates,
-            "count": len(candidates),
+            "products": products,
+            "count": len(products),
         }
     )

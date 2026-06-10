@@ -23,6 +23,13 @@ from graph.expected_time import (
     merge_expected_start_time,
     normalize_expected_start_time_text,
 )
+from graph.products import (
+    build_product_search_feedback,
+    build_product_search_query,
+    find_product_by_code,
+    get_selected_product,
+    resolve_selected_code,
+)
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
 from schemas.user import (
@@ -191,12 +198,9 @@ def normalize_goods_arrival_status(value: str | None) -> str | None:
 
 
 def format_service_type(service_type: str | None, order_info: dict[str, object]) -> str | None:
-    if service_type != "托管维修":
-        return service_type
-    scope = order_info.get("managed_repair_scope")
-    if scope in VALID_MANAGED_REPAIR_SCOPES:
-        return f"托管维修（{scope}）"
-    return service_type
+    from graph.products import format_service_type_display
+
+    return format_service_type_display(service_type, order_info)  # type: ignore[arg-type]
 
 
 def format_urgency(value: object) -> str:
@@ -209,18 +213,18 @@ def format_urgency(value: object) -> str:
     return labels.get(str(value), str(value or "普通"))
 
 
-def build_product_search_feedback(
-    order_info: dict[str, object],
-    matched_product: dict[str, object],
-    service_type: str | None,
-) -> str | None:
-    product_name = matched_product.get("service_product_name")
-    if not product_name:
+def get_product_search_feedback(state: AgentState) -> str | None:
+    selected_product = get_selected_product(
+        state.get("products") or [],
+        state.get("selected_product_code"),
+    )
+    if not selected_product:
         return None
-
-    described_issue = order_info.get("fault") or order_info.get("product") or "需求"
-    service_type_text = format_service_type(service_type, order_info) or "待确认"
-    return f"根据您描述的【{described_issue}】，已为您匹配到【{product_name}】，服务类型为【{service_type_text}】。"
+    return build_product_search_feedback(
+        order_info=state.get("order_info") or {},
+        selected_product=selected_product,
+        service_type=state.get("service_type") or selected_product.get("service_order_type"),
+    )
 
 
 def normalize_order_defaults(
@@ -392,6 +396,16 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "step": "intent_node",
         "last_user_message": last_user_message,
     }
+    if intent in {"create_order", "confirm_order"} and state.get("status") == "submitted":
+        output.update(
+            {
+                "products": [],
+                "selected_product_code": None,
+                "real_order_payload": {},
+                "real_order_result": {},
+                "real_order_missing_fields": [],
+            }
+        )
     trace_logger("node.intent.output", **output)
     if intent in {"create_order", "confirm_order"}:
         emit_status("intent_node", "已完成需求理解，准备匹配商品...")
@@ -401,26 +415,27 @@ async def intent_node(state: AgentState) -> dict[str, object]:
 async def search_product_node(state: AgentState) -> dict[str, object]:
     """根据已抽取的商品和问题，尽早匹配真实可下单商品。"""
 
+    existing_products = state.get("products") or []
+    if state.get("intent") == "confirm_order" and existing_products:
+        trace_logger(
+            "node.search_product.skip",
+            reason="confirm_with_existing_products",
+            selected_product_code=state.get("selected_product_code"),
+            product_count=len(existing_products),
+        )
+        return {"step": "search_product_node"}
+
     order_info = state.get("order_info", {})
     product = order_info.get("product")
     fault = order_info.get("fault")
 
     # 无故障时从用户原始消息中补充服务意图关键词（如"安装"），辅助找到正确商品类型
     last_msg = state.get("last_user_message", "")
-    install_hint = "安装" if not fault and "安装" in last_msg else ""
-
-    search_query = " ".join(
-        str(value)
-        for value in [product, fault, install_hint]
-        if value
-    )
+    search_query = build_product_search_query(order_info, last_msg)
     if not search_query:
         output = {
-            "matched_product": {},
-            "product_candidates": [],
-            "product_search_status": "skipped",
-            "product_search_query": search_query,
-            "product_search_feedback": None,
+            "products": [],
+            "selected_product_code": None,
             "step": "search_product_node",
         }
         trace_logger("node.search_product.skipped", **output)
@@ -436,14 +451,14 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         },
     )
     data = result.get("data", {})
-    candidates = data.get("candidates") or []
-    best_match = data.get("best_match") or {}
-    status = "success" if best_match else "no_match"
+    products = data.get("products") or []
+    top_product = get_selected_product(products, None)
+    status = "success" if products else "no_match"
     if result.get("status") != "success":
         status = "error"
 
-    # service_type 完全由匹配到的商品决定，匹配失败则置 null
-    service_type = best_match.get("service_order_type") or None
+    # service_type 完全由 Top1 商品决定，匹配失败则置 null
+    service_type = top_product.get("service_order_type") or None
     if service_type:
         emit_status("search_product_node", f"已确定服务类型：{service_type}")
     normalized_order_info = normalize_order_defaults(
@@ -451,18 +466,10 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         order_info=order_info,
         last_user_message=state.get("last_user_message", ""),
     )
-    product_search_feedback = build_product_search_feedback(
-        order_info=normalized_order_info,
-        matched_product=best_match,
-        service_type=service_type,
-    )
 
     output = {
-        "matched_product": best_match,
-        "product_candidates": candidates,
-        "product_search_status": status,
-        "product_search_query": search_query,
-        "product_search_feedback": product_search_feedback,
+        "products": products,
+        "selected_product_code": resolve_selected_code(products, state.get("selected_product_code")),
         "service_type": service_type,
         "order_info": normalized_order_info,
         "step": "search_product_node",
@@ -472,6 +479,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         tool_status=result.get("status"),
         tool_error_code=result.get("error_code"),
         tool_message=result.get("message"),
+        search_status=status,
         **output,
     )
     return output
@@ -623,7 +631,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     retry_count = state.get("retry_count", 0)
     off_topic_count = state.get("off_topic_count", 0)
     is_topic_deviation = state.get("intent") in {"unknown", "smalltalk"}
-    product_search_feedback = state.get("product_search_feedback")
+    product_search_feedback = get_product_search_feedback(state)
 
     if is_topic_deviation:
         question = await build_topic_boundary_response(state)
@@ -719,7 +727,10 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
 
     order_info = state.get("order_info", {})
     service_type = state.get("service_type")
-    matched_product = state.get("matched_product", {})
+    selected_product = get_selected_product(
+        state.get("products") or [],
+        state.get("selected_product_code"),
+    )
 
     if order_info.get("user_confirmed"):
         trace_logger("node.confirm.skip", reason="user_confirmed")
@@ -727,22 +738,26 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
             "step": "confirm_node",
         }
 
-    confirmation_text = render_prompt(
-        "confirm/confirm.md",
-        service_type=format_service_type(service_type, order_info),
-        room_number=order_info.get("room_number"),
-        product=order_info.get("product"),
-        fault=order_info.get("fault"),
-        area=order_info.get("area"),
-        urgency=format_urgency(order_info.get("urgency") or DEFAULT_URGENCY),
-        expected_start_time=order_info.get("expected_start_time") or "无",
-        goods_arrival_status=order_info.get("goods_arrival_status") or "无",
-        product_name=matched_product.get("service_product_name") or "未匹配到标准商品",
-        product_code=matched_product.get("service_product_code") or "无",
-    )
-    product_search_feedback = state.get("product_search_feedback")
-    if product_search_feedback:
-        confirmation_text = f"{product_search_feedback}\n\n{confirmation_text}"
+    products = state.get("products") or []
+    if products:
+        confirmation_text = render_prompt("confirm/confirm_card.md")
+        product_search_feedback = get_product_search_feedback(state)
+        if product_search_feedback:
+            confirmation_text = f"{product_search_feedback}\n\n{confirmation_text}"
+    else:
+        confirmation_text = render_prompt(
+            "confirm/confirm.md",
+            service_type=format_service_type(service_type, order_info),
+            room_number=order_info.get("room_number"),
+            product=order_info.get("product"),
+            fault=order_info.get("fault"),
+            area=order_info.get("area"),
+            urgency=format_urgency(order_info.get("urgency") or DEFAULT_URGENCY),
+            expected_start_time=order_info.get("expected_start_time") or "无",
+            goods_arrival_status=order_info.get("goods_arrival_status") or "无",
+            product_name=selected_product.get("service_product_name") or "未匹配到标准商品",
+            product_code=selected_product.get("service_product_code") or "无",
+        )
     await emit_token_text(confirmation_text, step="confirm_node")
 
     trace_logger(
@@ -770,11 +785,8 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "service_type": None,
         "status": "cancelled",
         "order_info": {},
-        "matched_product": {},
-        "product_candidates": [],
-        "product_search_status": None,
-        "product_search_query": None,
-        "product_search_feedback": None,
+        "products": [],
+        "selected_product_code": None,
         "missing_info": [],
         "retry_count": 0,
         "off_topic_count": 0,
@@ -801,11 +813,14 @@ async def submit_node(state: AgentState) -> dict[str, object]:
     OrderSaveReqVO 风格的真实下单参数；只有开启配置时才会真正调用用户端接口。
     """
 
-    matched_product = state.get("matched_product", {})
+    selected_product = get_selected_product(
+        state.get("products") or [],
+        state.get("selected_product_code"),
+    )
     order_info = state.get("order_info", {})
     submit_result = await submit_real_order(
         order_info=order_info,
-        matched_product=matched_product,
+        matched_product=selected_product,
         submit=True,
         user=user_from_runtime_config(),
     )
@@ -817,10 +832,10 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "order_id": order_id,
         "service_type": format_service_type(state.get("service_type"), state.get("order_info", {})),
         **order_info,
-        "product_code": matched_product.get("service_product_code"),
-        "product_name": matched_product.get("service_product_name"),
-        "product_order_type": matched_product.get("service_order_type"),
-        "matched_product": matched_product,
+        "product_code": selected_product.get("service_product_code"),
+        "product_name": selected_product.get("service_product_name"),
+        "product_order_type": selected_product.get("service_order_type"),
+        "selected_product": selected_product,
         "real_order_payload": request_payload,
         "real_order_result": submit_data,
     }
@@ -829,7 +844,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         order_id=order_id,
         service_type=format_service_type(state.get("service_type"), state.get("order_info", {})),
         order_info=order_info,
-        matched_product=matched_product,
+        matched_product=selected_product,
     )
     if not submit_data.get("submitted"):
         missing_text = "、".join(str(item) for item in missing_fields)
@@ -863,11 +878,8 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "real_order_missing_fields": missing_fields,
         "service_type": None,
         "order_info": {},
-        "matched_product": {},
-        "product_candidates": [],
-        "product_search_status": None,
-        "product_search_query": None,
-        "product_search_feedback": None,
+        "products": state.get("products") or [],
+        "selected_product_code": state.get("selected_product_code"),
         "missing_info": [],
         "retry_count": 0,
         "off_topic_count": 0,
@@ -1051,29 +1063,71 @@ async def clear_checkpoint_session(
 
 
 def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
-    order_info = state.get("order_info") or {}
-    matched_product = state.get("matched_product") or {}
-    candidates = state.get("product_candidates") or []
-    real_order_payload = state.get("real_order_payload") or {}
-    real_order_result = state.get("real_order_result") or {}
-    if not order_info and not matched_product and not candidates and not real_order_payload and not real_order_result:
-        return None
+    from schemas.order_preview import build_order_preview_model
 
-    return {
-        "service_type": state.get("service_type"),
-        "service_type_display": format_service_type(state.get("service_type"), order_info),
-        "status": state.get("status"),
-        "order_info": order_info,
-        "matched_product": matched_product,
-        "product_candidates": candidates,
-        "product_search_status": state.get("product_search_status"),
-        "product_search_query": state.get("product_search_query"),
-        "product_search_feedback": state.get("product_search_feedback"),
-        "missing_info": state.get("missing_info") or [],
-        "real_order_payload": real_order_payload,
-        "real_order_result": real_order_result,
-        "real_order_missing_fields": state.get("real_order_missing_fields") or [],
-    }
+    order_info = state.get("order_info") or {}
+    products = state.get("products") or []
+    service_type = state.get("service_type")
+    if not service_type and products:
+        selected = get_selected_product(products, state.get("selected_product_code"))
+        service_type = selected.get("service_order_type") or None
+
+    enriched_state = dict(state)
+    enriched_state["service_type"] = service_type
+    enriched_state["service_type_display"] = format_service_type(service_type, order_info)
+    preview = build_order_preview_model(enriched_state)
+    if preview is None:
+        return None
+    return preview.model_dump(mode="json")
+
+
+async def select_product_in_session(
+    session_id: str,
+    product_code: str,
+    user: UserContext,
+) -> dict[str, object]:
+    """在前端点选商品后，更新会话中的 selected_product_code 与 service_type。"""
+    active_user = require_user(user)
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+        await checkpointer.setup()
+        graph = build_graph(checkpointer)
+        config = get_graph_config(active_user, session_id)
+        snapshot = await graph.aget_state(config)
+        state = snapshot.values or {}
+        if not state:
+            raise SessionAccessError("会话不存在或尚未开始对话")
+        ensure_session_access(state, active_user)
+
+        products = state.get("products") or []
+        selected = find_product_by_code(products, product_code)
+        if not selected:
+            raise ValueError(f"商品 {product_code} 不在当前检索结果中")
+
+        service_type = selected.get("service_order_type") or state.get("service_type")
+        order_info = normalize_order_defaults(
+            service_type=service_type,
+            order_info=state.get("order_info", {}),
+            last_user_message=state.get("last_user_message", ""),
+        )
+        update = {
+            "selected_product_code": product_code.strip(),
+            "service_type": service_type,
+            "order_info": order_info,
+        }
+        await graph.aupdate_state(config, update, as_node="search_product_node")
+
+        merged_state = dict(state)
+        merged_state.update(update)
+        order_preview = build_order_preview(merged_state)
+        if order_preview is None:
+            raise ValueError("更新商品后无法生成订单预览")
+
+        product_name = selected.get("service_product_name") or product_code
+        return {
+            "session_id": session_id,
+            "order_preview": order_preview,
+            "message": f"已选择商品【{product_name}】。",
+        }
 
 
 NODE_STATUS_MESSAGES = {

@@ -28,19 +28,26 @@ interface ChatMessage {
   time: string
 }
 
-interface PreOrder {
-  serviceType: string | null
-  roomNumber: string | null
-  product: string | null
-  fault: string | null
-  area: string | null
-  urgency: 'low' | 'medium' | 'high' | 'urgent' | null
-  expectedStartTime: string | null
-  goodsArrivalStatus: string | null
-  matchedProductName: string | null
-  matchedProductCode: string | null
-  status: string | null
-  missingInfo: string[]
+type UrgencyLevel = 'low' | 'medium' | 'high' | 'urgent'
+
+interface ProductOption {
+  code?: string
+  name?: string
+  service_type?: string
+  price?: string | null
+  repair_category?: string | null
+  score?: number | null
+  rank?: number
+  is_recommended?: boolean
+  is_selected?: boolean
+}
+
+interface ProductSection {
+  status?: string | null
+  query?: string | null
+  feedback?: string | null
+  selected_code?: string | null
+  items?: ProductOption[]
 }
 
 interface OrderPreview {
@@ -52,15 +59,17 @@ interface OrderPreview {
     product?: string | null
     fault?: string | null
     area?: string | null
-    urgency?: PreOrder['urgency']
+    urgency?: UrgencyLevel | null
     expected_start_time?: string | null
     goods_arrival_status?: string | null
   }
-  matched_product?: {
-    service_product_name?: string | null
-    service_product_code?: string | null
-  }
+  products?: ProductSection
   missing_info?: string[]
+  submission?: {
+    payload?: Record<string, unknown>
+    result?: Record<string, unknown>
+    missing_fields?: string[]
+  }
 }
 
 interface StreamEvent {
@@ -99,7 +108,9 @@ const chatBodyRef = ref<HTMLElement | null>(null)
 const historyRef = ref<HTMLElement | null>(null)
 
 const messages = ref<ChatMessage[]>([])
-const preOrder = ref<PreOrder>(createEmptyOrder())
+const orderPreview = ref<OrderPreview | null>(null)
+const isSelectingProduct = ref(false)
+const selectingProductCode = ref<string | null>(null)
 const historySessions = ref<SessionSummary[]>(loadHistorySessions())
 
 localStorage.setItem(SESSION_KEY, sessionId.value)
@@ -112,54 +123,99 @@ const filledCount = computed(() => orderFields.value.filter((field) => Boolean(f
 const totalFieldCount = computed(() => Math.max(orderFields.value.length, 1))
 const orderCompleteness = computed(() => Math.round((filledCount.value / totalFieldCount.value) * 100))
 
+const orderInfo = computed(() => orderPreview.value?.order_info ?? {})
+const previewStatus = computed(() => orderPreview.value?.status ?? null)
+const serviceTypeDisplay = computed(
+  () => orderPreview.value?.service_type_display ?? orderPreview.value?.service_type ?? null,
+)
+const missingInfo = computed(() => orderPreview.value?.missing_info ?? [])
+const productItems = computed(() => orderPreview.value?.products?.items ?? [])
+const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
+const selectedProduct = computed(
+  () => productItems.value.find(isProductSelected) ?? productItems.value[0] ?? null,
+)
+const submittedOrderId = computed(() => extractOrderId(orderPreview.value?.submission?.result))
+
 const canSubmit = computed(() =>
-  preOrder.value.status === 'confirming' && preOrder.value.missingInfo.length === 0
+  previewStatus.value === 'confirming' && missingInfo.value.length === 0
 )
 
+const hasProductOptions = computed(() => productItems.value.length > 0)
+
+const isOrderSubmitted = computed(() => previewStatus.value === 'submitted')
+
+const showChatOrderPanel = computed(() => {
+  const status = previewStatus.value
+  // 已提交/已取消：不在对话区挂常驻卡片（提交结果以 AI 气泡为准）
+  if (status === 'submitted' || status === 'cancelled') return false
+  if (!status || status === 'idle') return false
+  // 点击「确认下单」后 status 仍为 confirming，需等 submit_node 才变 submitted；等待期间先收起卡片
+  if (isSending.value && status === 'confirming') return false
+  return productItems.value.length > 0 || missingInfo.value.length > 0
+})
+
+const canConfirmOrder = computed(
+  () => canSubmit.value && Boolean(selectedProductCode.value) && !isSending.value,
+)
+
+const canCancelOrder = computed(() => {
+  const status = previewStatus.value
+  return (status === 'collecting' || status === 'confirming') && !isSending.value
+})
+
+const missingInfoLabels: Record<string, string> = {
+  room_number: '房号',
+  product: '商品/设备',
+  fault: '故障描述',
+  area: '区域',
+  expected_start_time: '期待开工时间',
+  goods_arrival_status: '货物到场状态',
+}
+
 const urgencyConfig = computed(() => {
-  if (!preOrder.value.urgency) return { label: '—', icon: '·', color: 'text-slate-400', bg: 'bg-slate-50' }
+  if (!orderInfo.value.urgency) return { label: '—', icon: '·', color: 'text-slate-400', bg: 'bg-slate-50' }
   return {
     low:    { label: '低优先级', icon: '↓', color: 'text-emerald-700', bg: 'bg-emerald-50' },
     medium: { label: '普通',     icon: '→', color: 'text-blue-700',    bg: 'bg-blue-50'    },
     high:   { label: '较急',     icon: '↑', color: 'text-amber-700',   bg: 'bg-amber-50'   },
     urgent: { label: '紧急',     icon: '!', color: 'text-red-700',     bg: 'bg-red-50'     },
-  }[preOrder.value.urgency]
+  }[orderInfo.value.urgency]
 })
 
 const orderFields = computed(() => {
   const base = [
-    { key: 'serviceType', icon: '📋', label: '订单类型', value: preOrder.value.serviceType },
-    { key: 'product', icon: '🔧', label: '商品/设备', value: preOrder.value.product },
+    { key: 'serviceType', icon: '📋', label: '订单类型', value: serviceTypeDisplay.value },
+    { key: 'product', icon: '🔧', label: '商品/设备', value: orderInfo.value.product ?? null },
   ]
 
-  if (preOrder.value.serviceType?.includes('单次安装')) {
+  if (serviceTypeDisplay.value?.includes('单次安装')) {
     return [
       ...base,
-      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: preOrder.value.expectedStartTime },
-      { key: 'goodsArrivalStatus', icon: '🚚', label: '货物是否到场', value: preOrder.value.goodsArrivalStatus },
+      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: orderInfo.value.expected_start_time ?? null },
+      { key: 'goodsArrivalStatus', icon: '🚚', label: '货物是否到场', value: orderInfo.value.goods_arrival_status ?? null },
     ]
   }
 
-  if (preOrder.value.serviceType?.includes('单次测量')) {
+  if (serviceTypeDisplay.value?.includes('单次测量')) {
     return [
       ...base,
-      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: preOrder.value.expectedStartTime },
+      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: orderInfo.value.expected_start_time ?? null },
     ]
   }
 
-  if (preOrder.value.serviceType?.includes('单次维修')) {
+  if (serviceTypeDisplay.value?.includes('单次维修')) {
     return [
       ...base,
-      { key: 'fault', icon: '⚡', label: '问题描述', value: preOrder.value.fault },
-      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: preOrder.value.expectedStartTime },
+      { key: 'fault', icon: '⚡', label: '问题描述', value: orderInfo.value.fault ?? null },
+      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: orderInfo.value.expected_start_time ?? null },
     ]
   }
 
   return [
     ...base,
-    { key: 'fault', icon: '⚡', label: '问题描述', value: preOrder.value.fault },
-    { key: 'area', icon: '📍', label: '所在区域', value: preOrder.value.area },
-    { key: 'roomNumber', icon: '🏠', label: '房间号', value: preOrder.value.roomNumber },
+    { key: 'fault', icon: '⚡', label: '问题描述', value: orderInfo.value.fault ?? null },
+    { key: 'area', icon: '📍', label: '所在区域', value: orderInfo.value.area ?? null },
+    { key: 'roomNumber', icon: '🏠', label: '房间号', value: orderInfo.value.room_number ?? null },
   ]
 })
 
@@ -178,23 +234,6 @@ const suggestions = [
 
 function currentTime() {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date())
-}
-
-function createEmptyOrder(): PreOrder {
-  return {
-    serviceType: null,
-    roomNumber: null,
-    product: null,
-    fault: null,
-    area: null,
-    urgency: null,
-    expectedStartTime: null,
-    goodsArrivalStatus: null,
-    matchedProductName: null,
-    matchedProductCode: null,
-    status: null,
-    missingInfo: [],
-  }
 }
 
 function loadHistorySessions(): SessionSummary[] {
@@ -301,50 +340,76 @@ function appendMessageContent(id: number, content: string) {
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
 }
 
-function inferPreOrder(text: string) {
-  const roomMatch = text.match(/(\d{3,5}|[A-Z]栋\d{2,5})/)
-  if (roomMatch) preOrder.value.roomNumber = roomMatch[1]
-
-  const pw = ['空调', '电视', '水龙头', '门锁', '洗碗机', '打印机', '马桶', '窗帘']
-  const p = pw.find((w) => text.includes(w))
-  if (p) preOrder.value.product = p
-
-  const fw = ['不制冷', '漏水', '打不开', '不亮', '卡纸', '堵塞', '不通电', '噪音大', '没信号']
-  const f = fw.find((w) => text.includes(w))
-  if (f) preOrder.value.fault = f
-
-  const aw = ['卫生间', '卧室', '客厅', '走廊', '会议室', '厨房', '大堂']
-  const a = aw.find((w) => text.includes(w))
-  if (a) preOrder.value.area = a
-
-  if (/马上|很急|危险|漏电|严重/.test(text)) preOrder.value.urgency = 'urgent'
-  else if (/尽快|比较急/.test(text)) preOrder.value.urgency = 'high'
-  else if (/不急|有空/.test(text)) preOrder.value.urgency = 'low'
-  else if (!preOrder.value.urgency) preOrder.value.urgency = 'medium'
-
-  const timeMatch = text.match(/(今天|明天|后天|本周[一二三四五六日天]?|下周[一二三四五六日天]?|\d{1,2}月\d{1,2}[日号]?)(上午|中午|下午|晚上|\d{1,2}点)?/)
-  if (timeMatch) preOrder.value.expectedStartTime = timeMatch[0]
-
-  if (/货没到|还没到|在路上/.test(text)) preOrder.value.goodsArrivalStatus = '未到场'
-  else if (/货到了|已收到|货物在酒店/.test(text)) preOrder.value.goodsArrivalStatus = '已到场'
-  else if (/到物流站|在物流点|待配送/.test(text)) preOrder.value.goodsArrivalStatus = '已到物流站'
+function applyOrderPreview(preview?: OrderPreview | null) {
+  if (!preview) {
+    orderPreview.value = null
+    return
+  }
+  orderPreview.value = preview
+  nextTick(() => {
+    chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' })
+  })
 }
 
-function applyOrderPreview(preview?: OrderPreview | null) {
-  if (!preview) return
-  const orderInfo = preview.order_info || {}
-  preOrder.value.serviceType = preview.service_type_display ?? preview.service_type ?? preOrder.value.serviceType
-  preOrder.value.roomNumber = orderInfo.room_number ?? preOrder.value.roomNumber
-  preOrder.value.product = orderInfo.product ?? preOrder.value.product
-  preOrder.value.fault = orderInfo.fault ?? preOrder.value.fault
-  preOrder.value.area = orderInfo.area ?? preOrder.value.area
-  preOrder.value.urgency = orderInfo.urgency ?? preOrder.value.urgency
-  preOrder.value.expectedStartTime = orderInfo.expected_start_time ?? preOrder.value.expectedStartTime
-  preOrder.value.goodsArrivalStatus = orderInfo.goods_arrival_status ?? preOrder.value.goodsArrivalStatus
-  preOrder.value.status = preview.status ?? preOrder.value.status
-  preOrder.value.missingInfo = preview.missing_info ?? preOrder.value.missingInfo
-  preOrder.value.matchedProductName = preview.matched_product?.service_product_name ?? preOrder.value.matchedProductName
-  preOrder.value.matchedProductCode = preview.matched_product?.service_product_code ?? preOrder.value.matchedProductCode
+function isProductSelected(item: ProductOption): boolean {
+  const activeCode = selectedProductCode.value
+  return Boolean(item.is_selected || (item.code && item.code === activeCode))
+}
+
+function extractOrderId(result?: Record<string, unknown>): string | null {
+  if (!result) return null
+  const candidates = [result.parent_order_no, result.order_id, result.order_no]
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function formatMatchScore(score?: number | null): string {
+  if (score == null) return ''
+  return `${Math.round(score * 100)}%`
+}
+
+async function selectProduct(item: ProductOption) {
+  const code = item.code?.trim()
+  if (!code || isSelectingProduct.value || isSending.value || isProductSelected(item)) return
+
+  isSelectingProduct.value = true
+  selectingProductCode.value = code
+  errorMessage.value = ''
+
+  try {
+    const res = await fetch(`/api/chat/${encodeURIComponent(sessionId.value)}/select-product`, {
+      method: 'POST',
+      headers: currentApiHeaders(),
+      body: JSON.stringify({ product_code: code }),
+    })
+    if (!res.ok) {
+      let detail = `选择失败 ${res.status}`
+      try {
+        const errBody = await res.json()
+        detail = typeof errBody.detail === 'string' ? errBody.detail : detail
+      } catch { /* ignore */ }
+      throw new Error(detail)
+    }
+    const data = await res.json()
+    applyOrderPreview(data.order_preview)
+  } catch (err) {
+    errorMessage.value = err instanceof Error ? err.message : '选择商品失败'
+  } finally {
+    isSelectingProduct.value = false
+    selectingProductCode.value = null
+  }
+}
+
+function confirmOrder() {
+  if (!canConfirmOrder.value || isSending.value) return
+  sendMessage('确认')
+}
+
+function cancelOrder() {
+  if (!canCancelOrder.value) return
+  sendMessage('取消，不用了')
 }
 
 async function sendMessage(text = inputText.value) {
@@ -356,7 +421,6 @@ async function sendMessage(text = inputText.value) {
   const ta = document.querySelector<HTMLTextAreaElement>('textarea')
   if (ta) ta.style.height = 'auto'
 
-  inferPreOrder(content)
   appendMessage('user', content)
   const assistantMessageId = appendMessage('assistant', '')
   streamStatus.value = '正在连接智能体...'
@@ -479,12 +543,16 @@ function toggleListening() {
   r.start()
 }
 
-function resetOrder() { preOrder.value = createEmptyOrder() }
+function resetOrder() {
+  orderPreview.value = null
+}
 
 function summarizeCurrentSession() {
   const u = messages.value.find((m) => m.role === 'user')
   if (!u) return
-  const title = [preOrder.value.roomNumber, preOrder.value.product, preOrder.value.fault].filter(Boolean).join(' ') || u.content.slice(0, 16)
+  const title = [orderInfo.value.room_number, orderInfo.value.product, orderInfo.value.fault]
+    .filter(Boolean)
+    .join(' ') || u.content.slice(0, 16)
   historySessions.value = [
     { id: sessionId.value, title, status: canSubmit.value ? '待确认' : '信息待补充', time: currentTime() },
     ...historySessions.value.filter((i) => i.id !== sessionId.value),
@@ -706,6 +774,114 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                   <span class="text-[12px] text-slate-500">{{ streamStatus || '正在处理您的请求...' }}</span>
                 </div>
               </div>
+
+              <!-- In-chat order panel: product cards + confirm/cancel -->
+              <div v-if="showChatOrderPanel" class="flex items-start gap-3.5">
+                <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
+                <div class="min-w-0 flex-1">
+                  <div class="overflow-hidden rounded-2xl border border-indigo-100 bg-white px-4 py-4 shadow-sm shadow-indigo-100/60">
+                    <!-- Submitted success -->
+                    <div
+                      v-if="isOrderSubmitted"
+                      class="mb-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3.5 py-3"
+                    >
+                      <p class="text-[13px] font-semibold text-emerald-800">订单已提交</p>
+                      <p v-if="submittedOrderId" class="mt-1 font-mono text-[12px] text-emerald-700">
+                        单号：{{ submittedOrderId }}
+                      </p>
+                      <p v-if="selectedProduct?.name" class="mt-1 text-[12px] text-emerald-700/90">
+                        商品：{{ selectedProduct.name }}
+                      </p>
+                    </div>
+
+                    <!-- Missing info (compact) -->
+                    <p
+                      v-else-if="missingInfo.length"
+                      class="mb-3 text-[12px] leading-5 text-amber-700"
+                    >
+                      还需补充：{{ missingInfo.map((f) => missingInfoLabels[f] || f).join('、') }}
+                    </p>
+
+                    <!-- Product cards -->
+                    <div v-if="hasProductOptions" class="space-y-2">
+                      <div v-if="productItems.length > 1 && !isOrderSubmitted" class="text-right">
+                        <p class="text-[10px] text-slate-400">← 左右滑动 →</p>
+                      </div>
+
+                      <div class="-mx-4 px-4">
+                        <div class="flex gap-3 overflow-x-auto pb-2 scroll-smooth snap-x snap-mandatory">
+                          <div
+                            v-for="item in productItems"
+                            :key="`chat-${item.code}`"
+                            class="relative flex h-[188px] w-[220px] shrink-0 snap-start flex-col rounded-xl border p-3.5 text-left transition-all duration-200"
+                            :class="[
+                              isProductSelected(item)
+                                ? 'border-indigo-400 bg-indigo-50 ring-2 ring-indigo-200'
+                                : 'border-slate-200 bg-white',
+                              !isOrderSubmitted && !isSelectingProduct && !isSending ? 'cursor-pointer hover:border-indigo-200 hover:shadow-sm' : '',
+                              isOrderSubmitted ? 'opacity-95' : '',
+                            ]"
+                            :role="isOrderSubmitted ? undefined : 'button'"
+                            @click="!isOrderSubmitted && selectProduct(item)"
+                          >
+                            <div class="flex items-start justify-between gap-2">
+                              <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-800">{{ item.name }}</p>
+                              <span
+                                v-if="item.is_recommended && !isOrderSubmitted"
+                                class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700"
+                              >推荐</span>
+                            </div>
+                            <p class="mt-1 font-mono text-[10px] text-slate-400">{{ item.code }}</p>
+                            <p v-if="item.service_type" class="mt-1 truncate text-[11px] text-slate-500">{{ item.service_type }}</p>
+                            <div class="mt-2 flex flex-wrap gap-1.5">
+                              <span v-if="item.repair_category" class="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ item.repair_category }}</span>
+                              <span v-if="item.price" class="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">¥{{ item.price }}</span>
+                              <span v-if="item.score != null" class="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">匹配 {{ formatMatchScore(item.score) }}</span>
+                            </div>
+
+                            <div class="mt-auto pt-3">
+                              <span
+                                v-if="!isOrderSubmitted && selectingProductCode === item.code"
+                                class="inline-flex items-center gap-1.5 text-[11px] text-indigo-600"
+                              >
+                                <span class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600"></span>
+                                选择中…
+                              </span>
+                              <span
+                                v-else-if="isProductSelected(item)"
+                                class="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600"
+                              >
+                                <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                                </svg>
+                                {{ isOrderSubmitted ? '已下单' : '已选中' }}
+                              </span>
+                              <span v-else-if="!isOrderSubmitted" class="text-[11px] font-medium text-indigo-500">点击选择</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div v-if="!isOrderSubmitted" class="mt-4 flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        class="flex-1 rounded-xl bg-indigo-600 py-2.5 text-[13px] font-semibold text-white shadow-sm shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                        :disabled="!canConfirmOrder"
+                        @click="confirmOrder"
+                      >确认下单</button>
+                      <button
+                        type="button"
+                        class="flex-1 rounded-xl border border-slate-200 bg-white py-2.5 text-[13px] font-medium text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        :disabled="!canCancelOrder"
+                        @click="cancelOrder"
+                      >取消订单</button>
+                    </div>
+                  </div>
+                  <p class="mt-2 text-[11px] text-slate-400">{{ currentTime() }}</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -831,31 +1007,32 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
             <!-- Urgency field -->
             <div
               class="flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
-              :class="preOrder.urgency ? urgencyConfig.bg + ' border-transparent' : 'border-slate-100 bg-slate-50/60'"
+              :class="orderInfo.urgency ? urgencyConfig.bg + ' border-transparent' : 'border-slate-100 bg-slate-50/60'"
             >
               <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/80 text-[13px] font-bold shadow-sm" :class="urgencyConfig.color">
                 {{ urgencyConfig.icon }}
               </span>
               <div class="min-w-0 flex-1">
                 <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">紧急程度</p>
-                <p class="mt-0.5 text-[13px] font-medium" :class="preOrder.urgency ? urgencyConfig.color : 'text-slate-300'">
+                <p class="mt-0.5 text-[13px] font-medium" :class="orderInfo.urgency ? urgencyConfig.color : 'text-slate-300'">
                   {{ urgencyConfig.label }}
                 </p>
               </div>
             </div>
 
-            <!-- Matched product -->
+            <!-- Matched product summary (sidebar read-only) -->
             <div
               class="flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
-              :class="preOrder.matchedProductCode ? 'border-indigo-100 bg-indigo-50/60' : 'border-slate-100 bg-slate-50/60'"
+              :class="selectedProduct?.code ? 'border-indigo-100 bg-indigo-50/60' : 'border-slate-100 bg-slate-50/60'"
             >
               <span class="shrink-0 text-[15px] leading-none">📦</span>
               <div class="min-w-0 flex-1">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">匹配商品</p>
-                <p class="mt-0.5 truncate text-[13px] font-medium" :class="preOrder.matchedProductName ? 'text-slate-800' : 'text-slate-300'">
-                  {{ preOrder.matchedProductName || '待匹配' }}
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">当前选中商品</p>
+                <p class="mt-0.5 truncate text-[13px] font-medium" :class="selectedProduct?.name ? 'text-slate-800' : 'text-slate-300'">
+                  {{ selectedProduct?.name || '待匹配' }}
                 </p>
-                <p v-if="preOrder.matchedProductCode" class="mt-0.5 truncate text-[11px] text-slate-400">{{ preOrder.matchedProductCode }}</p>
+                <p v-if="selectedProduct?.code" class="mt-0.5 truncate text-[11px] text-slate-400">{{ selectedProduct.code }}</p>
+                <p v-if="hasProductOptions" class="mt-1 text-[10px] text-indigo-500">请在对话窗口选择商品</p>
               </div>
             </div>
 
@@ -874,10 +1051,6 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
 
           <!-- Action buttons -->
           <div class="space-y-2 border-t border-slate-100 p-3.5">
-            <button
-              class="w-full rounded-xl bg-indigo-600 py-2.5 text-[13px] font-semibold text-white shadow-sm shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-30"
-              :disabled="!canSubmit"
-            >确认预下单</button>
             <button
               class="w-full rounded-xl border border-slate-200 py-2.5 text-[13px] font-medium text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700"
               @click="resetOrder"
