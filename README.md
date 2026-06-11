@@ -37,42 +37,170 @@ B栋 301 门锁打不开
 3. 匹配标准商品：用 `商品名 + 故障现象` 向量检索 `assets/spu.xlsx` 中的商品，匹配结果同时确定服务类型。
 4. 按服务类型校验必填字段，追问缺失信息：一次只问一个最关键问题。
 5. 展示预下单信息：让用户确认、修改或取消。
-6. 提交订单：当前项目用本地模拟订单号，后续可替换为真实工单 API。
+6. 提交订单：按用户端 App 的下单结构构造真实请求参数，并在配置、登录态和必填字段满足时调用真实下单接口。
 
-## 业务流程
+## 完整流程速览
 
-主流程由 LangGraph 状态机驱动：
+可以把这个项目理解成四层：
+
+```text
+用户自然语言 / 语音
+    ↓
+Vue 前端：聊天、流式展示、商品选择、预下单卡片编辑
+    ↓
+FastAPI：对话接口、流式接口、商品选择接口、订单信息更新接口、确认提交接口
+    ↓
+LangGraph 状态机：意图识别、商品匹配、维保范围校验、字段校验、追问、确认、提交
+    ↓
+工具层：SPU 检索、维保卡/地址/用户信息读取、真实下单参数构造、真实下单接口调用
+```
+
+一轮典型下单会经历：
+
+1. 用户输入："1208 房空调不制冷，明天上午来修"。
+2. 前端调用 `/api/chat/stream`，后端返回 NDJSON 流式事件。
+3. `intent_node` 用 LLM 识别意图并抽取 `order_info`。
+4. `search_product_node` 用商品检索工具找 Top3 标准商品。
+5. 用户在前端商品卡片点选某个商品，或默认等待选择。
+6. `coverage_node` 对托管维修商品做维保范围校验；不覆盖时可能降级为单次维修。
+7. `prepare_order_context_node` 读取默认地址、联系人、维保卡等下单上下文，生成预下单卡片字段。
+8. `validate_order_node` 检查缺失字段；缺字段进入 `ask_node` 追问。
+9. 信息完整后进入 `confirm_node`，前端展示预下单卡片。
+10. 用户可编辑联系人、电话、时间等字段，前端调用 `PATCH /api/chat/{session_id}/order-info` 同步状态。
+11. 用户点击"确认下单"，前端调用 `POST /api/chat/{session_id}/confirm`，后端绕过 LLM 直接提交。
+12. `submit_node` 构造真实下单参数，调用真实接口；成功后保存 `last_order` 并清空当前活跃订单状态，避免后续对话继续显示旧卡片。
+
+## 状态机与节点编排
+
+主流程由 `graph/builder.py` 中的 LangGraph 状态机驱动。状态结构定义在 `graph/state.py`，每个节点返回一个字典来更新 `AgentState`。
 
 ```mermaid
 flowchart TD
-    START([START]) --> intent_node[intent_node<br/>识别意图并抽取订单信息]
+    START([START]) --> intent_node[intent_node<br/>识别意图 + 抽取订单信息]
 
-    intent_node -->|cancel_order| cancel_node[cancel_node<br/>取消并清空预下单]
-    intent_node -->|create_order / confirm_order| search_product_node[search_product_node<br/>匹配标准商品]
-    intent_node -->|unknown / smalltalk| ask_node[ask_node<br/>友好回应或追问]
+    intent_node -->|取消| cancel_node[cancel_node<br/>取消并清空当前订单]
+    intent_node -->|创建/确认订单| search_product_node[search_product_node<br/>商品检索或商品选择]
+    intent_node -->|闲聊/未知且无活跃订单| assist_node[assist_node<br/>辅助智能体回复]
+    intent_node -->|闲聊/未知但有活跃订单| ask_node[ask_node<br/>纠偏并继续追问]
 
-    search_product_node --> validate_order_node[validate_order_node<br/>检查缺失订单信息]
+    search_product_node -->|无选中商品/用户选了不符合| ask_node
+    search_product_node -->|有选中商品| coverage_node[coverage_node<br/>维保范围校验]
 
-    validate_order_node -->|有缺失订单信息| ask_node
-    validate_order_node -->|订单信息完整| confirm_node[confirm_node<br/>展示预下单信息]
+    coverage_node --> prepare_order_context_node[prepare_order_context_node<br/>加载默认地址/联系人/卡片字段]
+    prepare_order_context_node --> validate_order_node[validate_order_node<br/>校验必填字段]
 
-    confirm_node -->|用户已确认| submit_node[submit_node<br/>提交订单]
-    confirm_node -->|未确认| END([END])
+    validate_order_node -->|仍有缺失| ask_node
+    validate_order_node -->|信息完整| confirm_node[confirm_node<br/>生成确认话术和预下单卡片]
+
+    confirm_node -->|LLM 识别到 user_confirmed=true| submit_node[submit_node<br/>真实下单]
+    confirm_node -->|等待用户确认| END([END])
 
     ask_node --> END
+    assist_node --> END
     cancel_node --> END
     submit_node --> END
 ```
 
 节点职责：
 
-- `intent_node`：识别 `intent`，并抽取 `order_info`（product、fault、room_number、area、urgency、expected_start_time、goods_arrival_status 等）。不提取 `service_type`，由商品匹配结果决定。
-- `search_product_node`：用 `product + fault` 向量检索标准商品，匹配成功后从商品的 `service_order_type` 确定 `service_type`；匹配失败则 `service_type` 为 null。
-- `validate_order_node`：按 `service_type` 取对应必填字段清单，与 `order_info` 对比，计算 `missing_info`。
-- `ask_node`：追问缺失信息，或处理闲聊/偏题。
-- `confirm_node`：展示预下单信息，等待用户确认。
-- `cancel_node`：取消当前订单并清空预下单状态。
-- `submit_node`：提交订单并保存最近一次订单摘要。
+| 节点 | 主要职责 | 关键输入/输出 |
+| --- | --- | --- |
+| `intent_node` | 调用结构化 LLM，识别 `intent` 并抽取 `order_info`。提交成功后的新订单只看最新用户输入，避免旧订单被重新抽取。 | 输入 `messages`、`last_order`、`status`；输出 `intent`、`order_info`、`status`、`last_user_message` |
+| `search_product_node` | 根据 `product + fault + 用户原文` 生成检索 query，调用 `search_product_tool` 取 Top3；也处理用户输入"1/2/3/以上都不符合"。 | 输出 `products`、`selected_product_code`、`service_type`、`ui_phase` |
+| `coverage_node` | 托管维修商品校验维保卡覆盖范围；非托管维修跳过；范围外时 `effective_service_type` 可降级为单次维修。 | 输出 `coverage_result`、`effective_service_type`、`order_submit_route` |
+| `prepare_order_context_node` | 读取维保卡、用户资料、地址、全局配置等默认值，并由 `graph/order_fields.py` 生成前端卡片字段。 | 输出 `order_context`、`order_card_fields`、`ui_phase=pre_order` |
+| `validate_order_node` | 按最终服务类型校验必填字段，合并卡片必填项，决定继续追问还是进入确认。 | 输出 `missing_info`、`status=collecting/confirming` |
+| `ask_node` | 对缺失字段生成追问；处理商品不合适、偏题、重复追问等场景。 | 输出 AI 消息、`off_topic_count` |
+| `assist_node` | 无活跃订单时，使用 `create_agent()` 辅助智能体处理闲聊或简单问题。 | 输出辅助回复 |
+| `confirm_node` | 信息完整后生成确认提示；如果本轮已经明确 `user_confirmed=true`，路由会进入提交。 | 输出确认话术、`status=confirming` |
+| `submit_node` | 调用 `graph/submission.py::submit_order_from_state`，构造真实参数并提交订单。成功后写入 `last_order` 并清空活跃订单状态。 | 输出 `real_order_payload`、`real_order_result`、`status=submitted` |
+| `cancel_node` | 用户取消时清空当前订单相关状态。 | 输出 `status=cancelled`、空 `order_info/products` |
+
+## 状态字段与生命周期
+
+`AgentState` 是整个系统的"共享记忆"。LangGraph checkpoint 会按用户和会话保存它，所以多轮对话不是靠前端记忆，而是靠后端状态恢复。
+
+常见生命周期：
+
+```text
+idle
+  ↓ 用户开始下单
+collecting
+  ↓ 商品已选、字段补齐
+confirming
+  ↓ 确认并真实提交成功
+submitted
+
+任意 collecting/confirming 阶段都可以取消：
+collecting / confirming → cancelled
+```
+
+两个字段容易混淆：
+
+- `status`：订单业务生命周期，控制能否确认、取消、提交。
+- `ui_phase`：前端展示阶段，控制展示商品选择卡、预下单卡、提交成功卡。
+
+关键状态字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `messages` | LangGraph 消息历史，使用 `add_messages` 追加 |
+| `user_id` | 当前会话所属用户，用于越权校验 |
+| `intent` | 本轮意图：`create_order`、`confirm_order`、`cancel_order`、`smalltalk`、`unknown` |
+| `order_info` | LLM 抽取和前端卡片编辑后合并的订单信息 |
+| `products` | 商品检索结果 Top3 |
+| `selected_product_code` | 当前选中的标准商品编码；未选中时为空 |
+| `service_type` | 商品原始服务类型，例如 `托管维修`、`单次维修服务` |
+| `effective_service_type` | 最终用于字段校验和提交的服务类型，托管维修范围外可能降级 |
+| `coverage_result` | 维保范围校验结果 |
+| `order_context` | 从用户端接口得到的地址、联系人、维保卡、配置等默认值 |
+| `order_card_fields` | 后端生成、前端直接渲染的预下单卡片字段 |
+| `missing_info` | 还需要用户补充的字段 |
+| `real_order_payload` | 构造出的真实下单请求参数 |
+| `real_order_result` | 真实下单接口返回 |
+| `last_order` | 最近一次成功提交的订单摘要 |
+
+## AI 对话与确定性操作
+
+项目里有两类动作：
+
+1. **需要 AI 理解的动作**：自然语言下单、补充字段、偏题纠偏、闲聊。这些通过 `/api/chat/stream` 或 `/api/chat` 进入 LangGraph，由 `intent_node`、`ask_node`、`assist_node` 使用 LLM。
+2. **不需要 AI 猜测的动作**：点选商品、编辑卡片字段、点击确认按钮。这些由专门接口直接更新 checkpoint 状态，避免把 UI 操作再交给 LLM 重新解释。
+
+这样设计的原因是：LLM 擅长理解自然语言，但点击按钮这类操作已经是明确意图，应该走确定性接口，减少误判。
+
+具体接口：
+
+| 前端动作 | 接口 | 后端函数 | 是否经过 LLM |
+| --- | --- | --- | --- |
+| 发送自然语言消息 | `POST /api/chat/stream` | `stream_agent_events()` | 是 |
+| 非流式发送消息 | `POST /api/chat` | `run_agent()` | 是 |
+| 点选商品卡片 | `POST /api/chat/{session_id}/select-product` | `select_product_in_session()` | 否 |
+| 编辑预下单字段 | `PATCH /api/chat/{session_id}/order-info` | `update_order_info_in_session()` | 否 |
+| 点击确认下单 | `POST /api/chat/{session_id}/confirm` | `confirm_order_in_session()` | 否 |
+| 查看历史和当前卡片 | `GET /api/chat/{session_id}/history` | `get_checkpoint_messages()` / `get_checkpoint_state()` | 否 |
+| 清空会话 | `DELETE /api/chat/{session_id}` | `clear_checkpoint_session()` | 否 |
+
+## 流式事件协议
+
+`POST /api/chat/stream` 返回 NDJSON，每一行都是一个 JSON 事件。前端逐行解析，边处理边更新 UI。
+
+事件类型：
+
+| 类型 | 用途 |
+| --- | --- |
+| `session` | 返回或确认本次 `session_id` |
+| `status` | 更新"正在理解需求/正在匹配商品/正在提交订单"等进度文案 |
+| `preview` | 返回最新 `order_preview`，前端据此刷新商品卡或预下单卡 |
+| `token` | 打字机式追加 AI 回复内容 |
+| `final` | 本轮完成，包含最终 `answer` 和最终 `order_preview` |
+| `error` | 后端处理失败 |
+
+前端解析流时要注意：
+
+- NDJSON 可能一段里包含多行，也可能半行，需要用 buffer 拼接。
+- 单行 JSON 解析失败不能让整个页面崩溃，应抛出可展示错误或跳过异常行。
+- 如果流式接口失败，当前前端会 fallback 到非流式 `/api/chat`。
 
 ## 核心命名约定
 
@@ -106,7 +234,7 @@ flowchart TD
 ```text
 前端 Vue 页面
     |
-    | POST /api/chat
+    | POST /api/chat/stream（优先）或 POST /api/chat（fallback）
     v
 FastAPI API 层
     |
@@ -129,14 +257,20 @@ SQLite Checkpoint
 | `api/routes.py` | `/api/chat`、历史查询、清空会话接口 |
 | `graph/state.py` | LangGraph `AgentState` 定义 |
 | `graph/builder.py` | LangGraph 节点、路由、运行入口 |
-| `graph/agent_runtime.py` | 基于 `create_agent` 的辅助 Agent 和 middleware |
+| `graph/order_fields.py` | 必填字段、预下单卡片字段、前端编辑字段归一化 |
+| `graph/submission.py` | 订单提交和提交成功后的状态清理 |
+| `graph/agent.py` | 基于 `create_agent` 的辅助 Agent |
+| `graph/middleware.py` | 辅助 Agent 的模型/工具日志、重试、调用次数限制 |
 | `graph/studio.py` | LangGraph Studio 入口 |
 | `prompts/` | 文件化 Prompt |
 | `rag/product_store.py` | Chroma 向量库封装，商品检索主路径 |
 | `rag/qwen_embedding.py` | Qwen text-embedding 客户端 |
 | `rag/spu_loader.py` | Excel SPU 数据加载和服务类型归一化 |
 | `tools/product_search.py` | `search_product_tool`：向量检索商品，对话节点与 HTTP 接口的统一入口 |
-| `tools/maintenance.py` | 下单相关业务工具 |
+| `tools/hosting_coverage.py` | 托管维修维保范围校验 |
+| `tools/order_submit.py` | 真实下单入口和外部 App/API 调用封装 |
+| `tools/order_submit_managed.py` | 托管维修下单参数构造 |
+| `tools/order_submit_single.py` | 单次维修/安装/测量下单参数构造 |
 | `config/settings.py` | 项目配置入口 |
 | `frontend/` | Vue 3 前端页面 |
 | `docs/` | 设计、测试、追踪、商品匹配文档 |
@@ -160,7 +294,7 @@ SQLite Checkpoint
 
 ## Agent Middleware
 
-主下单流程仍然由手写 LangGraph 状态机控制，保证订单生命周期可预测。项目另外通过 `graph/agent_runtime.py` 接入 LangChain 官方 `create_agent()`，用于处理无活跃订单时的闲聊、未知问题和简单工具问答。
+主下单流程仍然由手写 LangGraph 状态机控制，保证订单生命周期可预测。项目另外通过 `graph/agent.py` 接入 LangChain 官方 `create_agent()`，并通过 `graph/middleware.py` 增加日志、重试和调用次数限制，用于处理无活跃订单时的闲聊、未知问题和简单工具问答。
 
 当前接入的 middleware 包括：
 
@@ -255,35 +389,83 @@ SQLite Checkpoint
   → 展示确认信息，等待用户确认
 ```
 
+## 真实下单链路
+
+提交链路分三层：
+
+```text
+graph/submission.py
+    ↓ 调用
+tools/order_submit.py
+    ↓ 按订单类型分发
+tools/order_submit_managed.py / tools/order_submit_single.py
+```
+
+`tools/order_submit.py::submit_real_order()` 会根据 `effective_service_type` 路由：
+
+| 最终服务类型 | 提交路由 | 说明 |
+| --- | --- | --- |
+| `托管维修` | `managed_repair` | 调用托管维修下单结构，依赖维保卡、区域树、故障现象等上下文 |
+| `单次维修服务` | `single_repair` | 走单次订单结构 |
+| `单次安装` | `single_install` | 走单次订单结构，并要求货物到场状态 |
+| `单次测量` | `single_measure` | 走单次订单结构 |
+
+重要规则：
+
+- 联系人、电话优先使用前端卡片编辑后的 `order_info.contacts`、`order_info.phone`，再回退到 `order_context`。
+- `submit_node` 提交成功后会调用 `clear_active_order_state()` 清空当前活跃订单相关字段，只保留 `last_order`。这是为了避免后续闲聊或新订单继续携带旧预下单卡片。
+- 如果真实提交开关关闭、缺少必填参数、接口未返回订单号，状态会停留在 `confirming` 或 `collecting`，前端会展示失败原因和可重试按钮。
+- 托管维修商品如果不在维保范围内，`coverage_node` 会把 `effective_service_type` 降级为 `单次维修服务`，后续字段校验和提交都按降级后的类型走。
+
 ## API 使用
 
-### 发起对话
+所有需要用户身份的接口都会通过 `api/deps.py::get_current_user` 读取请求头，生成 `UserContext`。前端调试参数保存在本地，发请求时由 `buildApiHeaders()` 写入 header。
+
+### 流式发起对话
+
+```bash
+curl -N -X POST http://localhost:8000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"demo-session","message":"1208 房空调不制冷，明天上午来修"}'
+```
+
+响应是 NDJSON，示意：
+
+```json
+{"type":"session","session_id":"demo-session"}
+{"type":"status","step":"intent_node","message":"正在理解您的需求并提取订单信息..."}
+{"type":"preview","step":"search_product_node","order_preview":{"ui_phase":"product_selection"}}
+{"type":"token","step":"confirm_node","content":"好的，收到。"}
+{"type":"final","session_id":"demo-session","answer":"好的，收到。信息已齐全...","order_preview":{"status":"confirming"}}
+```
+
+### 非流式发起对话
 
 ```bash
 curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"B栋 301 门锁打不开"}'
+  -d '{"session_id":"demo-session","message":"B栋 301 门锁打不开"}'
 ```
 
-响应示例：
+响应结构：
 
 ```json
 {
-  "session_id": "4f4c1d66-xxxx",
-  "answer": "请确认订单信息：...",
+  "session_id": "demo-session",
+  "answer": "请确认订单信息...",
   "order_preview": {
-    "service_type": "单次维修服务",
+    "ui_phase": "pre_order",
     "status": "confirming",
+    "service_type": "托管维修",
+    "effective_service_type": "托管维修",
     "order_info": {
       "room_number": "B栋 301",
       "product": "门锁",
-      "fault": "打不开",
-      "area": "卫生间",
-      "urgency": "medium"
+      "fault": "打不开"
     },
     "products": {
       "status": "success",
-      "query": "门锁 打不开 卫生间",
+      "query": "门锁 打不开",
       "selected_code": "FWSP01468",
       "items": [
         {
@@ -296,6 +478,14 @@ curl -X POST http://localhost:8000/api/chat \
         }
       ]
     },
+    "order_card": {
+      "fields": []
+    },
+    "coverage": {
+      "checked": true,
+      "covered": true,
+      "reason": "该商品在维保范围内"
+    },
     "missing_info": [],
     "submission": {
       "payload": {},
@@ -306,36 +496,53 @@ curl -X POST http://localhost:8000/api/chat \
 }
 ```
 
-### 多轮对话
+字段说明见 [docs/api_order_preview.md](docs/api_order_preview.md)。
+
+### 多轮对话继续补字段
 
 后续请求带上同一个 `session_id`：
 
 ```bash
 curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"4f4c1d66-xxxx","message":"确认"}'
-```
-
-### 查看历史
-
-```bash
-curl http://localhost:8000/api/chat/{session_id}/history
+  -d '{"session_id":"demo-session","message":"明天上午"}'
 ```
 
 ### 选择商品（前端点选卡片）
 
 ```bash
-curl -X POST http://localhost:8000/api/chat/{session_id}/select-product \
+curl -X POST http://localhost:8000/api/chat/demo-session/select-product \
   -H "Content-Type: application/json" \
   -d '{"product_code":"FWSP01537"}'
 ```
 
-字段说明见 [docs/api_order_preview.md](docs/api_order_preview.md)。
+### 编辑预下单卡片字段
+
+```bash
+curl -X PATCH http://localhost:8000/api/chat/demo-session/order-info \
+  -H "Content-Type: application/json" \
+  -d '{"updates":{"phone":"13900001111","contacts":"张三"}}'
+```
+
+### 确认下单（按钮）
+
+```bash
+curl -X POST http://localhost:8000/api/chat/demo-session/confirm \
+  -H "Content-Type: application/json"
+```
+
+这个接口不会再让 LLM 判断"确认"是什么意思，而是直接读取 checkpoint 中的当前预下单状态，重新校验必填字段，然后提交。
+
+### 查看历史和当前卡片
+
+```bash
+curl http://localhost:8000/api/chat/demo-session/history
+```
 
 ### 清空会话
 
 ```bash
-curl -X DELETE http://localhost:8000/api/chat/{session_id}
+curl -X DELETE http://localhost:8000/api/chat/demo-session
 ```
 
 ## 本地运行
@@ -456,21 +663,60 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 
 注意：项目通过 `load_dotenv(".env", override=True)` 让 `.env` 优先于系统环境变量。
 
-## 前端说明
+## 前端说明与注意事项
 
-前端位于 `frontend/`，核心页面是 `frontend/src/App.vue`。
+前端位于 `frontend/`，主页面是 `frontend/src/App.vue`。它负责状态编排和接口调用，展示组件已经拆分到：
 
-功能包括：
+| 路径 | 职责 |
+| --- | --- |
+| `frontend/src/App.vue` | 会话状态、流式请求、商品选择、字段更新、确认/取消等事件处理 |
+| `frontend/src/types/order.ts` | 前端使用的 `OrderPreview`、商品、卡片字段等类型 |
+| `frontend/src/components/ProductSelectionCard.vue` | 商品候选卡片和"以上都不符合"操作 |
+| `frontend/src/components/OrderPreviewCard.vue` | 预下单字段展示、编辑、确认/取消按钮 |
+| `frontend/src/components/OrderStatusNotices.vue` | 缺字段、维保范围、提交失败/提交中提示 |
+| `frontend/src/utils/apiParams.ts` | 本地调试 header 参数加载、保存、重置 |
 
-- 聊天消息区
-- 语音输入按钮
-- 示例快捷输入
-- 预下单卡片
-- 订单信息完整度
-- 匹配商品展示
-- 历史会话列表
+前端核心状态都从 `order_preview` 派生：
 
-前端会调用 `/api/chat`，并用响应中的 `order_preview` 更新预下单卡片。
+| 前端 computed | 来源 | 用途 |
+| --- | --- | --- |
+| `uiPhase` | `order_preview.ui_phase` | 判断展示商品选择还是预下单卡 |
+| `previewStatus` | `order_preview.status` | 判断是否 collecting / confirming / submitted |
+| `productItems` | `order_preview.products.items` | 渲染候选商品 |
+| `selectedProductCode` | `order_preview.products.selected_code` | 判断当前选中商品 |
+| `orderFields` | `order_preview.order_card.fields` | 渲染后端生成的预下单字段 |
+| `missingInfoText` | `order_preview.missing_info` | 展示缺失字段 |
+| `coverageNotice` | `order_preview.coverage` | 展示维保范围提示 |
+| `submittedOrderId` | `order_preview.submission.result` | 展示真实单号 |
+
+前端调用链：
+
+1. 普通消息优先调用 `/api/chat/stream`。
+2. 流式失败时 fallback 到 `/api/chat`。
+3. 商品卡点击调用 `/api/chat/{session_id}/select-product`。
+4. 卡片字段编辑调用 `/api/chat/{session_id}/order-info`。
+5. 确认按钮调用 `/api/chat/{session_id}/confirm`。
+6. 取消按钮仍发送"取消，不用了"，让状态机走 `cancel_node`。
+
+前端注意事项：
+
+- 不要在前端自己推断服务类型、必填字段或下单字段。前端只渲染后端 `order_preview`。
+- 商品卡片必须使用后端返回的 `selected_code` 判断选中态，不要按数组下标保存选择。
+- 卡片编辑后必须调用后端更新 checkpoint，否则真实提交会继续使用旧字段。
+- 确认按钮不要再发送普通聊天消息，应该调用确定性 `/confirm` 接口。
+- 提交成功后后端会清空活跃订单字段，前端如果看到 `status=submitted`，只展示成功状态和单号，不应继续展示可编辑预下单卡。
+- `apiParams` 只是本地调试辅助，生产环境应由网关或登录态注入真实 header。
+
+## 后端注意事项
+
+- `service_type` 来自商品匹配结果，不应该由 LLM 直接决定。
+- `effective_service_type` 才是字段校验和真实提交时使用的最终类型。
+- 修改订单字段时，要同步 `graph/order_fields.py`、`schemas/order_preview.py`、`frontend/src/types/order.ts`。
+- 修改状态字段时，要同步 `graph/state.py`、`build_order_preview_model()` 和前端 computed。
+- `order_card_fields` 是前端卡片的契约，字段 `key` 一旦发布要谨慎修改。
+- `submit_order_from_state()` 成功后必须清空 `products`、`selected_product_code`、`order_info`、`real_order_payload` 等活跃订单字段，否则后续对话会重新显示旧卡片。
+- `last_order` 用来回答"刚才那个订单"这类追问，不等于当前活跃订单。
+- 所有会话读取和更新前都要调用 `ensure_session_access()`，避免用户访问别人的 checkpoint。
 
 ## 目录结构
 
@@ -510,31 +756,58 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 8. 修改状态字段时，需要同步更新：
    - `graph/state.py`
    - `graph/builder.py`
+   - `graph/order_fields.py`
+   - `graph/submission.py`
    - `prompts/`
+   - `schemas/order_preview.py`
    - `frontend/src/App.vue`
+   - `frontend/src/types/order.ts`
+   - `frontend/src/components/OrderPreviewCard.vue`
+   - `frontend/src/components/ProductSelectionCard.vue`
    - `docs/`
 9. 修改前端接口字段时，要同步后端 `order_preview`。
-10. 提交前建议运行：
+10. 点选商品、编辑卡片、确认提交是确定性接口，不要退回成普通聊天消息。
+11. 提交前建议运行：
 
 ```bash
-uv run python -m compileall graph api schemas tools rag config
+uv run pytest tests/test_order_submit_payload.py tests/test_search_product_node.py tests/test_order_preview.py tests/test_order_cases_fixture.py
 cd frontend && npm run build
 ```
 
 ## 集成测试
 
-`tests/test_chat_flow.py` 覆盖 13 个聊天流程场景，调用真实 LLM，每个用例独立 session 并在结束后清理。
+项目测试分两类：
+
+- 快速回归测试：主要验证订单预览、商品节点、真实下单 payload、fixture 覆盖等，不强依赖真实 LLM。
+- 聊天集成测试：`tests/test_chat_flow.py` 覆盖端到端聊天流程，可能调用真实 LLM。
+
+常用快速回归：
 
 ```bash
-# 运行全部
-.venv/bin/python -m pytest tests/test_chat_flow.py -v
+uv run pytest tests/test_order_submit_payload.py tests/test_search_product_node.py tests/test_order_preview.py tests/test_order_cases_fixture.py
+```
+
+如果想看到测试步骤、输入状态和输出 payload，可显式打开追踪：
+
+```bash
+uv run pytest --trace-flow tests/test_order_submit_payload.py::test_single_order_payload_uses_edited_contacts_and_phone
+
+# 或
+TRACE_TEST_STEPS=1 uv run pytest tests/test_product_selection_flow.py
+```
+
+聊天集成测试：
+
+```bash
+# 运行全部聊天流
+uv run pytest tests/test_chat_flow.py -v
 
 # 只跑某一组
-.venv/bin/python -m pytest tests/test_chat_flow.py -v -k "TestSingleTurn"
-.venv/bin/python -m pytest tests/test_chat_flow.py -v -k "TestMultiTurn"
+uv run pytest tests/test_chat_flow.py -v -k "TestSingleTurn"
+uv run pytest tests/test_chat_flow.py -v -k "TestMultiTurn"
 
 # 单个用例
-.venv/bin/python -m pytest tests/test_chat_flow.py::TestSingleTurnComplete::test_guest_room_ac_repair -v
+uv run pytest tests/test_chat_flow.py::TestSingleTurnComplete::test_guest_room_ac_repair -v
 ```
 
 | 分组 | 用例数 | 覆盖场景 |
