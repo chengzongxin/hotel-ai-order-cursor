@@ -77,10 +77,10 @@ class Settings(BaseSettings):
 
     tavily_api_key: str = Field(default="", repr=False)
 
-    admin_api_base_url: str = "http://192.168.2.223:18080"
+    admin_api_base_url: str = "https://userapp.hxcsz.com"
 
     user_app_base_url: str = "https://userapp.hxcsz.com"
-    user_app_submit_enabled: bool = False
+    user_app_submit_enabled: bool = True
     user_app_timeout_seconds: float = 30.0
 
     @cached_property
