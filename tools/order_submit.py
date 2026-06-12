@@ -166,7 +166,10 @@ def _match_fault_phenomenon(fault: str, fault_list: list[JsonDict]) -> JsonDict 
 
 
 async def fetch_hosting_card(user: UserContext) -> JsonDict | None:
-    return await _fetch_app_data(HOSTING_CARD_GET, user)
+    from tools.hosting_card import fetch_hosting_card_with_diagnostics
+
+    card, _diagnostics = await fetch_hosting_card_with_diagnostics(user)
+    return card
 
 
 async def fetch_user_profile(user: UserContext) -> JsonDict | None:

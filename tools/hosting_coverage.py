@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from schemas.user import UserContext
-from tools.order_submit import fetch_hosting_card, query_spu_by_name
+from tools.hosting_card import fetch_hosting_card_with_diagnostics
+from tools.order_submit import query_spu_by_name
 from tools.protocol import ToolErrorCode, ToolResult, error_response, success_response
 
 JsonDict = dict[str, Any]
@@ -65,6 +66,7 @@ def _build_result(
     hosting_card: JsonDict | None = None,
     spu_detail: JsonDict | None = None,
     second_area_id: int | None = None,
+    interface_response: JsonDict | None = None,
 ) -> JsonDict:
     return {
         "checked": checked,
@@ -77,6 +79,7 @@ def _build_result(
         "spu_id": _pick_spu_id(spu_detail or {}),
         "spu_name": (spu_detail or {}).get("name"),
         "second_area_id": second_area_id,
+        "interface_response": interface_response or {},
     }
 
 
@@ -104,7 +107,7 @@ async def check_hosting_product_coverage(
             ),
         )
 
-    hosting_card = await fetch_hosting_card(user)
+    hosting_card, interface_response = await fetch_hosting_card_with_diagnostics(user)
     if not hosting_card:
         return success_response(
             data=_build_result(
@@ -112,6 +115,7 @@ async def check_hosting_product_coverage(
                 covered=False,
                 reason="当前用户没有可用维保卡，只能按单次维修下单",
                 effective_service_type="单次维修服务",
+                interface_response=interface_response,
             ),
             message="hosting card not found",
         )
@@ -124,6 +128,7 @@ async def check_hosting_product_coverage(
                 reason="当前维保卡未生效，只能按单次维修下单",
                 effective_service_type="单次维修服务",
                 hosting_card=hosting_card,
+                interface_response=interface_response,
             ),
             message="hosting card is not active",
         )
@@ -137,6 +142,7 @@ async def check_hosting_product_coverage(
                 reason="当前维保卡没有返回维保商品范围，只能按单次维修下单",
                 effective_service_type="单次维修服务",
                 hosting_card=hosting_card,
+                interface_response=interface_response,
             ),
             message="hosting card scope is empty",
         )
@@ -153,6 +159,7 @@ async def check_hosting_product_coverage(
                 reason="查询托管维修商品详情失败，只能按单次维修下单",
                 effective_service_type="单次维修服务",
                 hosting_card=hosting_card,
+                interface_response=interface_response,
             ),
         )
 
@@ -164,6 +171,7 @@ async def check_hosting_product_coverage(
                 reason="未查询到托管维修商品详情，只能按单次维修下单",
                 effective_service_type="单次维修服务",
                 hosting_card=hosting_card,
+                interface_response=interface_response,
             ),
             message="managed repair spu not found",
         )
@@ -178,6 +186,7 @@ async def check_hosting_product_coverage(
                 effective_service_type="单次维修服务",
                 hosting_card=hosting_card,
                 spu_detail=spu,
+                interface_response=interface_response,
             ),
             message="managed repair spu id is missing",
         )
@@ -201,6 +210,7 @@ async def check_hosting_product_coverage(
                 hosting_card=hosting_card,
                 spu_detail=spu,
                 second_area_id=second_area_id,
+                interface_response=interface_response,
             ),
             message="hosting product is covered",
         )
@@ -214,6 +224,7 @@ async def check_hosting_product_coverage(
             hosting_card=hosting_card,
             spu_detail=spu,
             second_area_id=second_area_id,
+        interface_response=interface_response,
         ),
         message="hosting product is not covered",
     )
