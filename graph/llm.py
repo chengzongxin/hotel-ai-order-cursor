@@ -3,8 +3,24 @@ from functools import lru_cache
 import httpx
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables.config import RunnableConfig, ensure_config, merge_configs
 
 from config.settings import settings
+from graph.llm_callbacks import get_llm_trace_handler
+
+
+def get_llm_run_config(config: RunnableConfig | None = None) -> RunnableConfig:
+    """合并当前 Runnable 上下文与 LLM 追踪 callback。
+
+    仅挂在 get_llm().with_config(...) 上不够：with_structured_output、
+    create_agent 等包装层不会继承该 callback，必须在每次 invoke/astream 传入。
+    """
+    handler = get_llm_trace_handler()
+    base_config = config if config is not None else ensure_config()
+    existing_callbacks = list(base_config.get("callbacks") or [])
+    if handler in existing_callbacks:
+        return base_config
+    return merge_configs(base_config, {"callbacks": [handler]})
 
 
 @lru_cache
@@ -17,6 +33,6 @@ def get_llm() -> BaseChatModel:
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
         temperature=settings.openai_temperature,
-        model_kwargs={"extra_body": {"enable_thinking": False}},
+        extra_body={"enable_thinking": False},
         http_async_client=http_async_client,
     )

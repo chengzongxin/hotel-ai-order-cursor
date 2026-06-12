@@ -15,7 +15,7 @@
 - 记忆：LangGraph SQLite checkpoint
 - 商品匹配：Qwen text-embedding、BM25（jieba）+ 向量混合检索、Excel SPU 数据
 - 配置：`.env`、Pydantic Settings
-- 观测：LangSmith、LangGraph Studio、本地 trace 日志
+- 观测：LangSmith、LangGraph Studio、本地 trace 日志、LLM 调用参数/回复日志
 - 前端：Vue 3、Vite、UnoCSS
 - 依赖管理：`uv`
 
@@ -260,6 +260,8 @@ SQLite Checkpoint
 | `graph/order_fields.py` | 必填字段、预下单卡片字段、前端编辑字段归一化 |
 | `graph/submission.py` | 订单提交和提交成功后的状态清理 |
 | `graph/agent.py` | 基于 `create_agent` 的辅助 Agent |
+| `graph/llm.py` | 主 LLM 初始化、`get_llm_run_config()` 追踪配置合并 |
+| `graph/llm_callbacks.py` | LLM 调用参数与回复的本地日志 callback |
 | `graph/middleware.py` | 辅助 Agent 的模型/工具日志、重试、调用次数限制 |
 | `graph/studio.py` | LangGraph Studio 入口 |
 | `prompts/` | 文件化 Prompt |
@@ -644,6 +646,72 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 - tags: `hotel-ai-order`、`order`、当前 `APP_ENV`
 - metadata: `session_id`、`app_env`
 
+## LLM 调用日志
+
+除 LangSmith 外，项目还会在本地记录每次 **Chat 大模型** 调用的完整输入和输出，便于调试 Prompt、排查漏字段、对照用户原话。
+
+实现位置：
+
+- `graph/llm_callbacks.py`：`LLMCallTraceHandler`，监听 LangChain callback。
+- `graph/llm.py`：`get_llm_run_config()`，在每次 `invoke/astream` 时注入 callback。
+
+日志输出：
+
+- 控制台：logger 名称 `agent.llm`，级别 `INFO`
+- 文件：`logs/agent_llm_YYYYMMDD.log`
+- API Key 会自动脱敏为 `***`
+
+每次调用会成对出现两条日志，用同一个 `run_id` 关联：
+
+| 事件 | 含义 |
+| --- | --- |
+| `llm.call.payload` | 调用前：模型配置、`invocation_params`、完整 `messages`（含 System/Human/历史 AI） |
+| `llm.call.response` | 调用后：AI 回复、`llm_output`（token 统计在部分 structured output 路径可能为空） |
+
+已覆盖的生产调用点：
+
+| 场景 | 代码位置 |
+| --- | --- |
+| 意图识别 + 结构化抽取 | `intent_node` → `get_llm().with_structured_output(...).ainvoke(..., config=get_llm_run_config())` |
+| 缺字段追问 / 偏题纠偏 | `stream_llm_text()` → `get_llm().astream(..., config=get_llm_run_config())` |
+| 闲聊 / 简单问答（含 tool 多轮） | `assist_node` → `get_assist_agent().astream(..., config=get_llm_run_config())` |
+| 主图 run 兜底 | `get_graph_config()` 内合并 `get_llm_run_config()` |
+
+以下路径**不会**出现 `llm.call` 日志，属于预期行为：
+
+- `ask_node` 中商品推荐模板、缺字段 fallback 等固定文案
+- `select_product` / `update_order_info` / `confirm_order` 等确定性接口
+- `search_product_node` 的商品向量检索（走 `rag/qwen_embedding.py` 的 `/embeddings`，不是 Chat LLM）
+
+排查时可搜索：
+
+```bash
+# 控制台或日志文件中
+rg "llm\.call" logs/
+
+# 只看某次调用的输入输出配对
+rg "019eb970-9ca5" logs/agent_llm_*.log
+```
+
+新增 LLM 调用时，必须显式传入追踪配置，不要只依赖 `get_llm()` 返回值：
+
+```python
+from graph.llm import get_llm, get_llm_run_config
+
+await get_llm().ainvoke(messages, config=get_llm_run_config())
+async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
+    ...
+```
+
+原因：`with_structured_output()`、`create_agent()` 等包装层不会继承挂在模型上的 callback。
+
+与 `agent.trace` 的区别：
+
+| 日志 | 开关 | 内容 |
+| --- | --- | --- |
+| `agent.llm` / `llm.call.*` | 默认开启（`INFO`） | 每次 LLM 调用的完整参数和回复 |
+| `agent.trace` / `node.*` | `.env` 中 `DEBUG_TRACE_ENABLED=true` | 节点级摘要，如 `node.intent.input` |
+
 ## 配置说明
 
 常用配置：
@@ -653,6 +721,8 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 | `OPENAI_API_KEY` | 主 LLM API Key |
 | `OPENAI_BASE_URL` | OpenAI 兼容接口地址 |
 | `OPENAI_MODEL` | 主 LLM 模型名 |
+| `DEBUG_TRACE_ENABLED` | 是否开启 `agent.trace` 节点摘要日志（不影响 `agent.llm`） |
+| `LOG_LEVEL` | 控制台日志级别，默认 `INFO` |
 | `LANGSMITH_TRACING` | 是否开启 LangSmith |
 | `SQLITE_MEMORY_PATH` | LangGraph checkpoint SQLite 路径 |
 | `POSTGRES_ENABLED` | 是否启用 PostgreSQL 日志 |
@@ -767,7 +837,8 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
    - `docs/`
 9. 修改前端接口字段时，要同步后端 `order_preview`。
 10. 点选商品、编辑卡片、确认提交是确定性接口，不要退回成普通聊天消息。
-11. 提交前建议运行：
+11. 新增 Chat LLM 调用时，必须通过 `get_llm_run_config()` 传入 callback；详见上文「LLM 调用日志」。
+12. 提交前建议运行：
 
 ```bash
 uv run pytest tests/test_order_submit_payload.py tests/test_search_product_node.py tests/test_order_preview.py tests/test_order_cases_fixture.py

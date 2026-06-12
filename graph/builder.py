@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from graph.llm import get_llm
+from graph.llm import get_llm, get_llm_run_config
 from graph.prompts import PROMPTS_DIR, render_prompt
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -385,7 +385,8 @@ async def intent_node(state: AgentState) -> dict[str, object]:
                     last_order=state.get("last_order", {}),
                 )
             ),
-        ]
+        ],
+        config=get_llm_run_config(),
     )
 
     last_user_message = get_last_human_message(state["messages"])
@@ -808,7 +809,7 @@ async def emit_token_text(text: str, step: str, chunk_size: int = 4, delay_secon
 
 async def stream_llm_text(messages: list[BaseMessage], step: str) -> str:
     parts: list[str] = []
-    async for chunk in get_llm().astream(messages):
+    async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
         token = message_chunk_to_text(getattr(chunk, "content", ""))
         if not token:
             continue
@@ -940,6 +941,7 @@ async def assist_node(state: AgentState) -> dict[str, object]:
     latest_messages: list[BaseMessage] = []
     async for part in get_assist_agent().astream(
         {"messages": state.get("messages", [])},
+        config=get_llm_run_config(),
         stream_mode=["messages", "updates"],
         version="v2",
     ):
@@ -1200,24 +1202,26 @@ def get_interrupt_answer(result: dict[str, object]) -> str | None:
 
 def get_graph_config(user: UserContext, session_id: str) -> dict[str, object]:
     thread_id = build_thread_id(user.user_id, session_id)
-    return {
-        "configurable": {
-            "thread_id": thread_id,
-            "user_context": user.to_config_dict(),
-        },
-        "run_name": "order_graph",
-        "tags": [
-            "hotel-ai-order",
-            "order",
-            settings.app_env,
-        ],
-        "metadata": {
-            "session_id": session_id,
-            "user_id": user.user_id,
-            "tenant_id": user.tenant_id,
-            "app_env": settings.app_env,
-        },
-    }
+    return get_llm_run_config(
+        {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_context": user.to_config_dict(),
+            },
+            "run_name": "order_graph",
+            "tags": [
+                "hotel-ai-order",
+                "order",
+                settings.app_env,
+            ],
+            "metadata": {
+                "session_id": session_id,
+                "user_id": user.user_id,
+                "tenant_id": user.tenant_id,
+                "app_env": settings.app_env,
+            },
+        }
+    )
 
 
 def checkpoint_path() -> Path:
