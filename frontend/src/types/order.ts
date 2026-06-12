@@ -5,6 +5,7 @@ export interface ChatMessage {
   role: Role
   content: string
   time: string
+  variant?: 'order_success'
 }
 
 export type UrgencyLevel = 'low' | 'medium' | 'high' | 'urgent'

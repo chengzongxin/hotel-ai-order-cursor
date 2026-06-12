@@ -17,8 +17,9 @@ def get_llm_run_config(config: RunnableConfig | None = None) -> RunnableConfig:
     """
     handler = get_llm_trace_handler()
     base_config = config if config is not None else ensure_config()
-    existing_callbacks = list(base_config.get("callbacks") or [])
-    if handler in existing_callbacks:
+    callbacks = base_config.get("callbacks")
+    # LangGraph 运行时 callbacks 可能是 AsyncCallbackManager，不能 list() 迭代。
+    if isinstance(callbacks, list) and handler in callbacks:
         return base_config
     return merge_configs(base_config, {"callbacks": [handler]})
 

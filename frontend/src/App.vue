@@ -5,6 +5,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import OrderPreviewCard from './components/OrderPreviewCard.vue'
 import OrderStatusNotices from './components/OrderStatusNotices.vue'
+import OrderSuccessCard from './components/OrderSuccessCard.vue'
 import ProductSelectionCard from './components/ProductSelectionCard.vue'
 import type {
   ChatMessage,
@@ -119,7 +120,7 @@ const isOrderSubmitted = computed(() => previewStatus.value === 'submitted')
 
 const showChatOrderPanel = computed(() => {
   const status = previewStatus.value
-  if (status === 'submitted') return true
+  if (status === 'submitted') return false
   if (status === 'cancelled') return false
   if (!status || status === 'idle') return false
   if (productSelectionRejected.value) return false
@@ -346,9 +347,9 @@ async function switchSession(targetSessionId: string) {
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
 }
 
-function appendMessage(role: Role, content: string) {
+function appendMessage(role: Role, content: string, variant?: ChatMessage['variant']) {
   const id = Date.now() + Math.floor(Math.random() * 999)
-  messages.value.push({ id, role, content, time: currentTime() })
+  messages.value.push({ id, role, content, time: currentTime(), variant })
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
   return id
 }
@@ -357,6 +358,11 @@ function setMessageContent(id: number, content: string) {
   const message = messages.value.find((item) => item.id === id)
   if (message) message.content = content
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
+}
+
+function setMessageVariant(id: number, variant?: ChatMessage['variant']) {
+  const message = messages.value.find((item) => item.id === id)
+  if (message) message.variant = variant
 }
 
 function appendMessageContent(id: number, content: string) {
@@ -388,6 +394,10 @@ function extractOrderId(result?: Record<string, unknown>): string | null {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return null
+}
+
+function isSubmittedPreview(preview?: OrderPreview | null): boolean {
+  return preview?.status === 'submitted'
 }
 
 function formatMatchScore(score?: number | null): string {
@@ -510,6 +520,9 @@ async function confirmOrder() {
     }
     const data = await res.json()
     applyOrderPreview(data.order_preview)
+    if (isSubmittedPreview(data.order_preview)) {
+      setMessageVariant(assistantMessageId, 'order_success')
+    }
     setMessageContent(assistantMessageId, data.answer || '已处理确认下单请求。')
   } catch (err) {
     errorMessage.value = err instanceof Error ? err.message : '确认下单失败'
@@ -613,6 +626,9 @@ async function sendStreamingMessage(content: string, assistantMessageId: number)
         localStorage.setItem(SESSION_KEY, event.session_id)
       }
       applyOrderPreview(event.order_preview)
+      if (isSubmittedPreview(event.order_preview)) {
+        setMessageVariant(assistantMessageId, 'order_success')
+      }
       setMessageContent(assistantMessageId, streamedAnswer || event.answer || '我已收到，会继续为您处理。')
       return
     }
@@ -865,7 +881,14 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                   <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
                   <div class="min-w-0 flex-1">
                     <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
-                    <div v-if="message.content" class="prose prose-sm" v-html="renderMarkdown(message.content)"></div>
+                    <OrderSuccessCard
+                      v-if="message.variant === 'order_success'"
+                      :order-id="submittedOrderId"
+                      :service-type="effectiveServiceTypeDisplay"
+                      :selected-product="selectedProduct"
+                      :fields="orderFields"
+                    />
+                    <div v-else-if="message.content" class="prose prose-sm" v-html="renderMarkdown(message.content)"></div>
                     <p v-else class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-[12px] text-indigo-600">
                       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500"></span>
                       {{ streamStatus || '正在处理您的请求...' }}
@@ -903,20 +926,6 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
                 <div class="min-w-0 flex-1">
                   <div class="overflow-hidden rounded-2xl border border-indigo-100 bg-white px-4 py-4 shadow-sm shadow-indigo-100/60">
-                    <!-- Submitted success -->
-                    <div
-                      v-if="isOrderSubmitted"
-                      class="mb-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3.5 py-3"
-                    >
-                      <p class="text-[13px] font-semibold text-emerald-800">订单已提交</p>
-                      <p v-if="submittedOrderId" class="mt-1 font-mono text-[12px] text-emerald-700">
-                        单号：{{ submittedOrderId }}
-                      </p>
-                      <p v-if="selectedProduct?.name" class="mt-1 text-[12px] text-emerald-700/90">
-                        商品：{{ selectedProduct.name }}
-                      </p>
-                    </div>
-
                     <OrderStatusNotices
                       v-if="isSubmittingOrder || hasSubmissionFailure"
                       class="mb-3"
