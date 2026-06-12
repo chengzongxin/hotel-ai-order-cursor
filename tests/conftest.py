@@ -31,18 +31,46 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="打印自动化测试的调用步骤、输入和输出。",
     )
-
-
-def _trace_enabled(config: pytest.Config) -> bool:
-    return bool(config.getoption("--trace-flow") or os.getenv("TRACE_TEST_STEPS") == "1")
+    parser.addoption(
+        "--run-llm",
+        action="store_true",
+        default=False,
+        help="运行需要真实 LLM API 的集成测试。",
+    )
+    parser.addoption(
+        "--run-embedding",
+        action="store_true",
+        default=False,
+        help="运行需要 Qwen embedding 与 chroma_db 的商品召回评测。",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     global _PYTEST_TRACE_ENABLED
     _PYTEST_TRACE_ENABLED = _trace_enabled(config)
     if _PYTEST_TRACE_ENABLED:
-        # 只在显式追踪时关闭捕获，效果类似临时加 `-s`。
         config.option.capture = "no"
+    config.addinivalue_line("markers", "llm: requires real Chat LLM API")
+    config.addinivalue_line("markers", "embedding: requires Qwen embedding + chroma_db")
+    config.addinivalue_line("markers", "e2e: full run_agent integration")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    run_llm = config.getoption("--run-llm")
+    run_embedding = config.getoption("--run-embedding")
+
+    skip_llm = pytest.mark.skip(reason="需要 --run-llm 才运行真实 LLM 集成测试")
+    skip_embedding = pytest.mark.skip(reason="需要 --run-embedding 才运行商品召回 embedding 评测")
+
+    for item in items:
+        if "llm" in item.keywords and not run_llm:
+            item.add_marker(skip_llm)
+        if "embedding" in item.keywords and not run_embedding:
+            item.add_marker(skip_embedding)
+
+
+def _trace_enabled(config: pytest.Config) -> bool:
+    return bool(config.getoption("--trace-flow") or os.getenv("TRACE_TEST_STEPS") == "1")
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:

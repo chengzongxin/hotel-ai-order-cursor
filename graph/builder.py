@@ -1,8 +1,6 @@
 import asyncio
-import re
 from collections.abc import AsyncIterator
 from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
 from graph.llm import get_llm, get_llm_run_config
@@ -10,7 +8,6 @@ from graph.prompts import PROMPTS_DIR, render_prompt
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
@@ -48,59 +45,40 @@ from schemas.user import (
     require_user,
     user_from_runtime_config,
 )
+from graph.checkpoint import (
+    checkpoint_path,
+    clear_checkpoint_session,
+    get_checkpoint_messages,
+    get_checkpoint_state,
+    get_graph_config,
+    message_to_item,
+)
+from graph.constants import (
+    ACTIVE_ORDER_PHASES,
+    MAX_RETRY_COUNT,
+    PHASE_CANCELLED,
+    PHASE_COLLECTING,
+    PHASE_IDLE,
+    PHASE_PRE_ORDER,
+    PHASE_PRODUCT_SELECTION,
+    PHASE_SUBMITTED,
+    VALID_MANAGED_REPAIR_SCOPES,
+)
+from graph.streaming import emit_status, emit_token_text, message_chunk_to_text, stream_llm_text
+from graph.text_parsing import (
+    build_product_recommendation_text,
+    build_selected_product_text,
+    extract_room_number,
+    format_service_type,
+    format_urgency,
+    is_cancel_request,
+    is_guest_room_text,
+    is_public_area_text,
+    parse_product_selection,
+)
 from tools.hosting_coverage import check_hosting_product_coverage
-from tools.order_submit import load_managed_repair_order_context
+from tools.order_context import load_managed_repair_order_context
 from tools.product_search import search_product_tool
-
-MAX_RETRY_COUNT = 2
-
-CANCEL_ORDER_KEYWORDS = ("取消", "不用了", "不提交", "先算了", "撤销", "放弃", "不要了")
-PUBLIC_AREA_KEYWORDS = (
-    "公区",
-    "公共区域",
-    "大厅",
-    "大堂",
-    "接待区",
-    "公区卫生间",
-    "公共厕所",
-    "布草间",
-    "办公室",
-    "洗衣房",
-    "员工区",
-    "走廊",
-    "过道",
-    "电梯",
-    "电梯厅",
-    "前台",
-    "餐厅",
-    "会议室",
-    "楼梯间",
-    "楼顶",
-    "健身房",
-    "停车场",
-    "仓库",
-    "设备间",
-)
-GUEST_ROOM_KEYWORDS = (
-    "客房",
-    "房间",
-    "房里",
-    "屋内",
-    "住客区",
-    "维修房",
-    "客房楼层",
-    "卫生间",
-    "淋浴间",
-)
-VALID_MANAGED_REPAIR_SCOPES = {"客房", "公区"}
-PRODUCT_NONE_SELECTIONS = {"0", "以上都不符合", "都不符合", "不符合", "没有合适", "没有匹配"}
-PHASE_IDLE = "idle"
-PHASE_PRODUCT_SELECTION = "product_selection"
-PHASE_PRE_ORDER = "pre_order"
-PHASE_COLLECTING = "collecting"
-PHASE_SUBMITTED = "submitted"
-PHASE_CANCELLED = "cancelled"
-ACTIVE_ORDER_PHASES = {PHASE_COLLECTING, PHASE_PRODUCT_SELECTION, PHASE_PRE_ORDER}
 
 def resolve_order_submit_route(service_type: str | None) -> str | None:
     route_map = {
@@ -158,123 +136,8 @@ def get_latest_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
     return None
 
 
-def get_optional_stream_writer():
-    try:
-        return get_stream_writer()
-    except RuntimeError:
-        return None
-
-
-def emit_status(step: str, message: str) -> None:
-    writer = get_optional_stream_writer()
-    if writer:
-        writer({"type": "status", "step": step, "message": message})
-
-
 def has_active_order(state: AgentState) -> bool:
     return state.get("phase") in ACTIVE_ORDER_PHASES
-
-
-def is_cancel_request(text: str) -> bool:
-    normalized_text = text.strip().lower()
-    return any(keyword in normalized_text for keyword in CANCEL_ORDER_KEYWORDS)
-
-
-def parse_product_selection(text: str | None) -> int | None:
-    """解析用户对 Top3 商品的选择；0 表示“以上都不符合”。"""
-
-    if not text:
-        return None
-    normalized = text.strip().lower()
-    if normalized in PRODUCT_NONE_SELECTIONS or "以上都不符合" in normalized:
-        return 0
-
-    mapping = {
-        "第一": 1,
-        "第一个": 1,
-        "1": 1,
-        "选1": 1,
-        "选择1": 1,
-        "一": 1,
-        "第二": 2,
-        "第二个": 2,
-        "2": 2,
-        "选2": 2,
-        "选择2": 2,
-        "二": 2,
-        "第三": 3,
-        "第三个": 3,
-        "3": 3,
-        "选3": 3,
-        "选择3": 3,
-        "三": 3,
-    }
-    if normalized in mapping:
-        return mapping[normalized]
-    match = re.search(r"(?:选|选择|第)?\s*([123])\s*(?:个|项)?", normalized)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def build_product_recommendation_text(products: list[dict[str, object]]) -> str:
-    if products:
-        return "好的，根据您的描述，为您推荐以下服务商品，请在下方卡片中选择您要下单的商品。"
-    return "请先选择要下单的服务商品。"
-
-
-def build_selected_product_text(selected_product: dict[str, object]) -> str:
-    name = selected_product.get("service_product_name") or "该商品"
-    repair_level = (
-        selected_product.get("repair_category")
-        or selected_product.get("product_type")
-        or selected_product.get("service_order_type")
-        or "待确认"
-    )
-    return f"好的，已为您选择【{name}（{repair_level}）】，正在生成预下单卡片。"
-
-
-def is_public_area_text(text: str | None) -> bool:
-    if not text:
-        return False
-    return any(keyword in text for keyword in PUBLIC_AREA_KEYWORDS)
-
-
-def is_guest_room_text(text: str | None) -> bool:
-    if not text:
-        return False
-    return any(keyword in text for keyword in GUEST_ROOM_KEYWORDS)
-
-
-def extract_room_number(text: str | None) -> str | None:
-    if not text:
-        return None
-    patterns = (
-        r"([A-Za-z]栋\s*\d{2,5})",
-        r"(\d{2,5})\s*(?:房间|房|号)",
-        r"房间\s*(\d{2,5})",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).replace(" ", "")
-    return None
-
-
-def format_service_type(service_type: str | None, order_info: dict[str, object]) -> str | None:
-    from graph.products import format_service_type_display
-
-    return format_service_type_display(service_type, order_info)  # type: ignore[arg-type]
-
-
-def format_urgency(value: object) -> str:
-    labels = {
-        "low": "低优先级",
-        "medium": "普通",
-        "high": "较急",
-        "urgent": "紧急",
-    }
-    return labels.get(str(value), str(value or "普通"))
 
 
 def get_product_search_feedback(state: AgentState) -> str | None:
@@ -783,43 +646,6 @@ def build_missing_info_fallback_question(missing_info: list[str]) -> str:
     return questions.get(field, f"请补充{field}。")
 
 
-def message_chunk_to_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return "".join(parts)
-    return ""
-
-
-async def emit_token_text(text: str, step: str, chunk_size: int = 4, delay_seconds: float = 0.015) -> None:
-    writer = get_optional_stream_writer()
-    if not writer:
-        return
-
-    for index in range(0, len(text), chunk_size):
-        token = text[index : index + chunk_size]
-        if token:
-            writer({"type": "token", "step": step, "content": token})
-            await asyncio.sleep(delay_seconds)
-
-
-async def stream_llm_text(messages: list[BaseMessage], step: str) -> str:
-    parts: list[str] = []
-    async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
-        token = message_chunk_to_text(getattr(chunk, "content", ""))
-        if not token:
-            continue
-        parts.append(token)
-        await emit_token_text(token, step=step, chunk_size=4, delay_seconds=0)
-    return "".join(parts).strip()
-
-
 async def build_missing_info_question(state: AgentState) -> str:
     missing_info = state.get("missing_info", [])
     if not missing_info:
@@ -1199,84 +1025,6 @@ def get_interrupt_answer(result: dict[str, object]) -> str | None:
         return str(question) if question else None
 
     return str(payload)
-
-
-def get_graph_config(user: UserContext, session_id: str) -> dict[str, object]:
-    thread_id = build_thread_id(user.user_id, session_id)
-    return get_llm_run_config(
-        {
-            "configurable": {
-                "thread_id": thread_id,
-                "user_context": user.to_config_dict(),
-            },
-            "run_name": "order_graph",
-            "tags": [
-                "hotel-ai-order",
-                "order",
-                settings.app_env,
-            ],
-            "metadata": {
-                "session_id": session_id,
-                "user_id": user.user_id,
-                "tenant_id": user.tenant_id,
-                "app_env": settings.app_env,
-            },
-        }
-    )
-
-
-def checkpoint_path() -> Path:
-    db_path = Path(settings.sqlite_memory_path)
-    if not db_path.is_absolute():
-        db_path = PROMPTS_DIR.parent / db_path
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return db_path
-
-
-def message_to_item(message: BaseMessage) -> dict[str, str]:
-    role_map = {
-        "human": "human",
-        "ai": "ai",
-        "system": "system",
-    }
-    return {
-        "role": role_map.get(message.type, message.type),
-        "content": str(message.content),
-    }
-
-
-async def get_checkpoint_state(
-    session_id: str,
-    user: UserContext,
-) -> AgentState:
-    active_user = require_user(user)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer)
-        snapshot = await graph.aget_state(get_graph_config(active_user, session_id))
-        state = snapshot.values or {}
-        if state:
-            ensure_session_access(state, active_user)
-        return state
-
-
-async def get_checkpoint_messages(
-    session_id: str,
-    user: UserContext,
-) -> list[dict[str, str]]:
-    state = await get_checkpoint_state(session_id, user=user)
-    return [message_to_item(message) for message in state.get("messages", [])]
-
-
-async def clear_checkpoint_session(
-    session_id: str,
-    user: UserContext,
-) -> None:
-    active_user = require_user(user)
-    thread_id = build_thread_id(active_user.user_id, session_id)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
-        await checkpointer.setup()
-        await checkpointer.adelete_thread(thread_id)
 
 
 def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:

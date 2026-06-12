@@ -9,12 +9,16 @@ TEST_ACCESS_TOKEN、TEST_USER_ID、TEST_TENANT_ID 等。
 import os
 import uuid
 
+import pytest
+
 from graph.builder import clear_checkpoint_session, run_agent
 from schemas.user import UserContext
 
+pytestmark = pytest.mark.llm
+
 DEFAULT_API_PARAMS = {
     # 与 frontend/src/utils/apiParams.ts 的开发默认值保持一致。
-    "access_token": "d5d15b2e6fc7480b9fe87ea8f43591c0",
+    "access_token": "3ca6c511d6b2478fb516bb6799b04746",
     "user_id": "dev-user",
     "tenant_id": "2123",
     "platform": "ios",

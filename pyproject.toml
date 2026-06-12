@@ -44,3 +44,8 @@ package = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "llm: requires real Chat LLM API",
+    "embedding: requires Qwen embedding + chroma_db",
+    "e2e: full run_agent integration",
+]

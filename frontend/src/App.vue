@@ -7,16 +7,14 @@ import OrderPreviewCard from './components/OrderPreviewCard.vue'
 import OrderStatusNotices from './components/OrderStatusNotices.vue'
 import OrderSuccessCard from './components/OrderSuccessCard.vue'
 import ProductSelectionCard from './components/ProductSelectionCard.vue'
-import type {
-  ChatMessage,
-  CoverageNotice,
-  OrderPreview,
-  ProductOption,
-  Role,
-  SessionSummary,
-  StreamEvent,
-  UiOrderField,
-} from './types/order'
+import { useChatApi } from './composables/useChatApi'
+import { useChatSession, currentTime } from './composables/useChatSession'
+import {
+  displayOrderFieldValue,
+  formatMatchScore,
+  useOrderPreview,
+} from './composables/useOrderPreview'
+import type { OrderPreview } from './types/order'
 import {
   API_PARAM_FIELDS,
   buildApiHeaders,
@@ -33,228 +31,166 @@ function renderMarkdown(content: string): string {
   return DOMPurify.sanitize(marked.parse(content) as string)
 }
 
-const SESSION_KEY = 'order_voice_session_id'
-const HISTORY_KEY = 'order_voice_history_sessions'
-
 const apiParams = ref<ApiRequestParams>(loadApiParams())
 const showApiParams = ref(true)
 const showApiParamsMobile = ref(false)
 const apiParamsSaved = ref(false)
 
-const sessionId = ref(localStorage.getItem(SESSION_KEY) || createSessionId())
 const inputText = ref('')
 const isListening = ref(false)
 const isSending = ref(false)
 const errorMessage = ref('')
 const streamStatus = ref('')
-const showHistory = ref(false)
 const chatBodyRef = ref<HTMLElement | null>(null)
 const historyRef = ref<HTMLElement | null>(null)
 
-const messages = ref<ChatMessage[]>([])
 const orderPreview = ref<OrderPreview | null>(null)
 const isSelectingProduct = ref(false)
 const selectingProductCode = ref<string | null>(null)
 const isUpdatingOrderInfo = ref(false)
 const updatingFieldKey = ref<string | null>(null)
-const historySessions = ref<SessionSummary[]>(loadHistorySessions())
 
-localStorage.setItem(SESSION_KEY, sessionId.value)
+const {
+  sessionId,
+  messages,
+  historySessions,
+  showHistory,
+  shortSessionId,
+  hasUserMessage,
+  hasPendingAssistantMessage,
+  appendMessage,
+  setMessageContent,
+  appendMessageContent,
+  setMessageOrderSuccess,
+  summarizeCurrentSession,
+  resetMessages,
+  setSessionId,
+} = useChatSession(chatBodyRef)
 
-const shortSessionId = computed(() => sessionId.value.slice(0, 8).toUpperCase())
-const hasUserMessage = computed(() => messages.value.some((m) => m.role === 'user'))
-const hasPendingAssistantMessage = computed(() => messages.value.some((m) => m.role === 'assistant' && !m.content))
+const preview = useOrderPreview(orderPreview, isSending, isUpdatingOrderInfo)
+const {
+  orderInfo,
+  phase,
+  submission,
+  submittedOrder,
+  serviceTypeDisplay,
+  effectiveServiceTypeDisplay,
+  missingInfo,
+  productItems,
+  productFeedback,
+  selectedProductCode,
+  productSelectionRejected,
+  selectedProduct,
+  isProductSelectionPhase,
+  isPreOrderPhase,
+  isAwaitingProductSelection,
+  showDraftOrderCard,
+  submittedOrderId,
+  submissionState,
+  isSubmittingOrder,
+  submissionMissingFields,
+  hasSubmissionFailure,
+  submissionFailureMessage,
+  canSubmit,
+  hasProductOptions,
+  isOrderSubmitted,
+  showChatOrderPanel,
+  canConfirmOrder,
+  canCancelOrder,
+  missingInfoText,
+  submissionMissingText,
+  coverageNotice,
+  urgencyConfig,
+  orderFields,
+  filledCount,
+  totalFieldCount,
+  orderCompleteness,
+  progressCircumference,
+  progressOffset,
+  isProductSelected,
+} = preview
 
-const filledCount = computed(() => orderFields.value.filter((field) => Boolean(field.value)).length)
-const totalFieldCount = computed(() => Math.max(orderFields.value.length, 1))
-const orderCompleteness = computed(() => Math.round((filledCount.value / totalFieldCount.value) * 100))
-
-const orderInfo = computed(() => orderPreview.value?.order_info ?? {})
-const phase = computed(() => orderPreview.value?.phase ?? null)
-const submission = computed(() => orderPreview.value?.submission ?? {})
-const submittedOrder = computed(() => orderPreview.value?.submitted_order ?? null)
-const serviceTypeDisplay = computed(
-  () => orderPreview.value?.service_type_display ?? orderPreview.value?.service_type ?? null,
-)
-const effectiveServiceTypeDisplay = computed(
-  () =>
-    orderPreview.value?.effective_service_type_display
-    ?? orderPreview.value?.effective_service_type
-    ?? serviceTypeDisplay.value
-    ?? null,
-)
-const missingInfo = computed(() => orderPreview.value?.missing_info ?? [])
-const coverage = computed(() => orderPreview.value?.coverage ?? {})
-const productItems = computed(() => orderPreview.value?.products?.items ?? [])
-const productFeedback = computed(() => orderPreview.value?.products?.feedback ?? null)
-const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
-const productSelectionRejected = computed(() => Boolean(orderPreview.value?.products?.selection_rejected))
-const selectedProduct = computed(
-  () => productItems.value.find(isProductSelected) ?? null,
-)
-const backendOrderFields = computed(() => orderPreview.value?.order_card?.fields ?? [])
-const hasBackendOrderFields = computed(() => backendOrderFields.value.length > 0)
-const isProductSelectionPhase = computed(() => phase.value === 'product_selection')
-const isPreOrderPhase = computed(() => phase.value === 'pre_order')
-const isAwaitingProductSelection = computed(
-  () => isProductSelectionPhase.value && hasProductOptions.value && !selectedProductCode.value && !productSelectionRejected.value,
-)
-const showDraftOrderCard = computed(() => isPreOrderPhase.value && Boolean(selectedProductCode.value) && hasBackendOrderFields.value)
-const submittedOrderId = computed(() => submittedOrder.value?.order_no || submission.value.order_no || null)
-const submissionState = computed(() => submission.value.state ?? 'not_attempted')
-const isSubmittingOrder = computed(() => submissionState.value === 'submitting' || (isSending.value && isPreOrderPhase.value))
-const submissionMissingFields = computed(() => submission.value.missing_fields ?? [])
-const hasSubmissionFailure = computed(() => submissionState.value === 'failed' || submissionState.value === 'disabled')
-const submissionFailureMessage = computed(() => submission.value.failure_message || '')
-
-const canSubmit = computed(() =>
-  isPreOrderPhase.value && missingInfo.value.length === 0 && submissionState.value !== 'succeeded'
-)
-
-const hasProductOptions = computed(() => productItems.value.length > 0)
-
-const isOrderSubmitted = computed(() => phase.value === 'submitted' || submissionState.value === 'succeeded')
-
-const showChatOrderPanel = computed(() => {
-  if (phase.value === 'submitted') return false
-  if (phase.value === 'cancelled') return false
-  if (!phase.value || phase.value === 'idle') return false
-  if (productSelectionRejected.value) return false
-  return (isProductSelectionPhase.value && productItems.value.length > 0) || showDraftOrderCard.value
-})
-
-const canConfirmOrder = computed(
-  () => canSubmit.value && Boolean(selectedProductCode.value) && !isSending.value && !isUpdatingOrderInfo.value,
-)
-
-const canCancelOrder = computed(() => {
-  return ['collecting', 'product_selection', 'pre_order'].includes(String(phase.value)) && !isSending.value
-})
-
-const missingInfoLabels: Record<string, string> = {
-  selected_product: '服务商品',
-  room_number: '房号',
-  product: '商品/设备',
-  fault: '故障现象',
-  area: '区域',
-  expected_start_time: '期待开工时间',
-  goods_arrival_status: '货物到场状态',
-  contacts: '联系人',
-  phone: '联系电话',
-  address: '地址',
-}
-
-const missingInfoText = computed(() =>
-  missingInfo.value
-    .map((field) => missingInfoLabels[field] || field)
-    .join('、')
-)
-
-const submissionMissingText = computed(() =>
-  submissionMissingFields.value
-    .map((field) => missingInfoLabels[field] || field)
-    .join('、')
-)
-
-const coverageNotice = computed<CoverageNotice | null>(() => {
-  const data = coverage.value
-  if (!data.checked || !data.reason) return null
-  const tone: CoverageNotice['tone'] = data.covered === false ? 'warning' : 'ok'
+function buildOrderSuccessSnapshot() {
   return {
-    tone,
-    title: data.covered === false ? '维保范围提示' : '维保范围已校验',
-    message: data.reason,
-  }
-})
-
-const urgencyConfig = computed(() => {
-  if (!orderInfo.value.urgency) return { label: '—', icon: '·', color: 'text-slate-400', bg: 'bg-slate-50' }
-  return {
-    low:    { label: '低优先级', icon: '↓', color: 'text-emerald-700', bg: 'bg-emerald-50' },
-    medium: { label: '普通',     icon: '→', color: 'text-blue-700',    bg: 'bg-blue-50'    },
-    high:   { label: '较急',     icon: '↑', color: 'text-amber-700',   bg: 'bg-amber-50'   },
-    urgent: { label: '紧急',     icon: '!', color: 'text-red-700',     bg: 'bg-red-50'     },
-  }[orderInfo.value.urgency]
-})
-
-function makeReadonlyField(
-  key: string,
-  icon: string,
-  label: string,
-  value: string | null | undefined,
-): UiOrderField {
-  return {
-    key,
-    icon,
-    label,
-    value: value ?? null,
-    required: false,
-    editable: false,
-    inputType: 'text',
-    options: [],
+    orderId: submittedOrderId.value,
+    serviceType: effectiveServiceTypeDisplay.value,
+    selectedProduct: selectedProduct.value ? { ...selectedProduct.value } : null,
+    fields: orderFields.value.map((field) => ({
+      ...field,
+      options: field.options.map((option) => ({ ...option })),
+    })),
+    submittedOrder: submittedOrder.value ? { ...submittedOrder.value } : null,
   }
 }
 
-const orderFields = computed<UiOrderField[]>(() => {
-  if (hasBackendOrderFields.value) {
-    return backendOrderFields.value.map((field) => ({
-      key: field.key,
-      icon: iconForOrderField(field.key),
-      label: field.label,
-      value: formatOrderFieldValue(field.value),
-      required: Boolean(field.required),
-      editable: field.editable !== false,
-      inputType: field.input_type || 'text',
-      options: field.options || [],
-    }))
-  }
-
-  const base = [
-    makeReadonlyField('serviceType', '📋', '订单类型', serviceTypeDisplay.value),
-    makeReadonlyField('product', '🔧', '商品/设备', orderInfo.value.product ?? null),
-  ]
-
-  if (serviceTypeDisplay.value?.includes('单次安装')) {
-    return [
-      ...base,
-      makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
-      makeReadonlyField('goodsArrivalStatus', '🚚', '货物是否到场', orderInfo.value.goods_arrival_status),
-    ]
-  }
-
-  if (serviceTypeDisplay.value?.includes('单次测量')) {
-    return [
-      ...base,
-      makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
-    ]
-  }
-
-  if (serviceTypeDisplay.value?.includes('单次维修')) {
-    return [
-      ...base,
-      makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
-      makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
-    ]
-  }
-
-  return [
-    ...base,
-    makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
-    makeReadonlyField('area', '📍', '所在区域', orderInfo.value.area),
-    makeReadonlyField('roomNumber', '🏠', '房间号', orderInfo.value.room_number),
-  ]
+const chatApi = useChatApi({
+  sessionId,
+  messages,
+  orderPreview,
+  chatBodyRef,
+  errorMessage,
+  streamStatus,
+  isSending,
+  isSelectingProduct,
+  selectingProductCode,
+  isUpdatingOrderInfo,
+  updatingFieldKey,
+  selectedProductCode,
+  apiParams,
+  appendMessage,
+  setMessageContent,
+  appendMessageContent,
+  setMessageOrderSuccess,
+  buildOrderSuccessSnapshot,
+  isProductSelected,
+  canConfirmOrder,
 })
 
-const progressR = 32
-const progressCircumference = computed(() => +(2 * Math.PI * progressR).toFixed(2))
-const progressOffset = computed(() =>
-  +(progressCircumference.value - (orderCompleteness.value / 100) * progressCircumference.value).toFixed(2)
-)
+const {
+  loadSessionHistory,
+  updateOrderInfoField,
+  selectProduct,
+  confirmOrder,
+  sendFallbackMessage,
+  sendStreamingMessage,
+} = chatApi
 
-type SuggestionChip = {
-  icon: string
-  text: string
+function currentApiHeaders() {
+  return buildApiHeaders(apiParams.value)
 }
+
+function persistApiParams() {
+  saveApiParams(apiParams.value)
+  apiParamsSaved.value = true
+  window.setTimeout(() => { apiParamsSaved.value = false }, 2000)
+}
+
+function restoreDefaultApiParams() {
+  apiParams.value = resetApiParams()
+  apiParamsSaved.value = true
+  window.setTimeout(() => { apiParamsSaved.value = false }, 2000)
+}
+
+async function switchSession(targetSessionId: string) {
+  if (targetSessionId === sessionId.value) {
+    showHistory.value = false
+    return
+  }
+
+  summarizeCurrentSession(orderInfo.value, canSubmit.value)
+  setSessionId(targetSessionId)
+  inputText.value = ''
+  errorMessage.value = ''
+  isListening.value = false
+  isSending.value = false
+  resetMessages()
+  resetOrder()
+  showHistory.value = false
+  await loadSessionHistory(targetSessionId)
+  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
+}
+
+type SuggestionChip = { icon: string; text: string }
 
 const suggestionPool: SuggestionChip[] = [
   { icon: '❄️', text: '1208 空调不制冷，比较急' },
@@ -274,296 +210,11 @@ const SUGGESTION_COUNT = 4
 const suggestions = ref<SuggestionChip[]>(buildRandomSuggestions())
 
 function buildRandomSuggestions(): SuggestionChip[] {
-  return [...suggestionPool]
-    .sort(() => Math.random() - 0.5)
-    .slice(0, SUGGESTION_COUNT)
+  return [...suggestionPool].sort(() => Math.random() - 0.5).slice(0, SUGGESTION_COUNT)
 }
 
 function refreshSuggestions() {
   suggestions.value = buildRandomSuggestions()
-}
-
-function currentTime() {
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date())
-}
-
-function loadHistorySessions(): SessionSummary[] {
-  try {
-    const saved = localStorage.getItem(HISTORY_KEY)
-    return saved ? JSON.parse(saved) : []
-  } catch { return [] }
-}
-
-function persistHistory() {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(historySessions.value.slice(0, 10)))
-}
-
-function mapHistoryRole(role: string): Role | null {
-  if (role === 'human' || role === 'user') return 'user'
-  if (role === 'ai' || role === 'assistant') return 'assistant'
-  return null
-}
-
-function currentApiHeaders() {
-  return buildApiHeaders(apiParams.value)
-}
-
-function persistApiParams() {
-  saveApiParams(apiParams.value)
-  apiParamsSaved.value = true
-  window.setTimeout(() => { apiParamsSaved.value = false }, 2000)
-}
-
-function restoreDefaultApiParams() {
-  apiParams.value = resetApiParams()
-  apiParamsSaved.value = true
-  window.setTimeout(() => { apiParamsSaved.value = false }, 2000)
-}
-
-async function loadSessionHistory(targetSessionId = sessionId.value) {
-  try {
-    const res = await fetch(`/api/chat/${encodeURIComponent(targetSessionId)}/history`, {
-      headers: currentApiHeaders(),
-    })
-    if (!res.ok) return
-
-    const data = await res.json()
-    const restored = (data.messages || [])
-      .map((msg: { role: string; content: string }, index: number) => {
-        const role = mapHistoryRole(msg.role)
-        if (!role || !msg.content?.trim()) return null
-        return { id: Date.now() + index, role, content: msg.content, time: currentTime() }
-      })
-      .filter(Boolean) as ChatMessage[]
-
-    if (restored.length) {
-      messages.value = restored
-      nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
-    }
-
-    if (data.order_preview) applyOrderPreview(data.order_preview)
-  } catch {
-    // 新会话或后端不可用时保持空白页
-  }
-}
-
-async function switchSession(targetSessionId: string) {
-  if (targetSessionId === sessionId.value) {
-    showHistory.value = false
-    return
-  }
-
-  summarizeCurrentSession()
-  sessionId.value = targetSessionId
-  localStorage.setItem(SESSION_KEY, targetSessionId)
-  inputText.value = ''
-  errorMessage.value = ''
-  isListening.value = false
-  isSending.value = false
-  messages.value = []
-  resetOrder()
-  showHistory.value = false
-  await loadSessionHistory(targetSessionId)
-  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
-}
-
-function appendMessage(role: Role, content: string, variant?: ChatMessage['variant']) {
-  const id = Date.now() + Math.floor(Math.random() * 999)
-  messages.value.push({ id, role, content, time: currentTime(), variant })
-  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
-  return id
-}
-
-function setMessageContent(id: number, content: string) {
-  const message = messages.value.find((item) => item.id === id)
-  if (message) message.content = content
-  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
-}
-
-function buildOrderSuccessSnapshot(): NonNullable<ChatMessage['orderSuccess']> {
-  return {
-    orderId: submittedOrderId.value,
-    serviceType: effectiveServiceTypeDisplay.value,
-    selectedProduct: selectedProduct.value ? { ...selectedProduct.value } : null,
-    fields: orderFields.value.map((field) => ({
-      ...field,
-      options: field.options.map((option) => ({ ...option })),
-    })),
-    submittedOrder: submittedOrder.value ? { ...submittedOrder.value } : null,
-  }
-}
-
-function setMessageOrderSuccess(id: number) {
-  const message = messages.value.find((item) => item.id === id)
-  if (message) {
-    message.variant = 'order_success'
-    message.orderSuccess = buildOrderSuccessSnapshot()
-  }
-}
-
-function appendMessageContent(id: number, content: string) {
-  const message = messages.value.find((item) => item.id === id)
-  if (message) message.content += content
-  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
-}
-
-function applyOrderPreview(preview?: OrderPreview | null) {
-  if (!preview) {
-    orderPreview.value = null
-    return
-  }
-  orderPreview.value = preview
-  nextTick(() => {
-    chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' })
-  })
-}
-
-function isProductSelected(item: ProductOption): boolean {
-  const activeCode = selectedProductCode.value
-  return Boolean(item.is_selected || (item.code && item.code === activeCode))
-}
-
-function isSubmittedPreview(preview?: OrderPreview | null): boolean {
-  return preview?.phase === 'submitted' || preview?.submission?.state === 'succeeded'
-}
-
-function formatMatchScore(score?: number | null): string {
-  if (score == null) return ''
-  return `${Math.round(score * 100)}%`
-}
-
-function iconForOrderField(key: string): string {
-  const icons: Record<string, string> = {
-    area_room: '📍',
-    urgency: '!',
-    remark: '✎',
-    contacts: '👤',
-    phone: '☎',
-    total_fee: '¥',
-    expected_time: '🕒',
-    goods_arrival_status: '🚚',
-    product_quantity: '×',
-  }
-  return icons[key] || '•'
-}
-
-function formatOrderFieldValue(value: unknown): string | null {
-  if (value == null || value === '') return null
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return JSON.stringify(value)
-}
-
-function displayOrderFieldValue(field: { value?: string | null; options?: Array<{ label: string; value: string }> }): string {
-  const value = field.value ?? ''
-  const option = field.options?.find((item) => item.value === value)
-  return option?.label || value || '待识别'
-}
-
-async function updateOrderInfoField(key: string, value: string | null) {
-  if (!selectedProductCode.value || isUpdatingOrderInfo.value) return
-  isUpdatingOrderInfo.value = true
-  updatingFieldKey.value = key
-  errorMessage.value = ''
-
-  try {
-    const res = await fetch(`/api/chat/${encodeURIComponent(sessionId.value)}/order-info`, {
-      method: 'PATCH',
-      headers: currentApiHeaders(),
-      body: JSON.stringify({ updates: { [key]: value ?? '' } }),
-    })
-    if (!res.ok) {
-      let detail = `更新失败 ${res.status}`
-      try {
-        const errBody = await res.json()
-        detail = typeof errBody.detail === 'string' ? errBody.detail : detail
-      } catch { /* ignore */ }
-      throw new Error(detail)
-    }
-    const data = await res.json()
-    applyOrderPreview(data.order_preview)
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : '更新下单信息失败'
-  } finally {
-    isUpdatingOrderInfo.value = false
-    updatingFieldKey.value = null
-  }
-}
-
-async function selectProduct(item: ProductOption) {
-  const code = item.code?.trim()
-  if (!code || isSelectingProduct.value || isSending.value || isProductSelected(item)) return
-
-  isSelectingProduct.value = true
-  selectingProductCode.value = code
-  errorMessage.value = ''
-
-  try {
-    const res = await fetch(`/api/chat/${encodeURIComponent(sessionId.value)}/select-product`, {
-      method: 'POST',
-      headers: currentApiHeaders(),
-      body: JSON.stringify({ product_code: code }),
-    })
-    if (!res.ok) {
-      let detail = `选择失败 ${res.status}`
-      try {
-        const errBody = await res.json()
-        detail = typeof errBody.detail === 'string' ? errBody.detail : detail
-      } catch { /* ignore */ }
-      throw new Error(detail)
-    }
-    const data = await res.json()
-    applyOrderPreview(data.order_preview)
-    if (typeof data.message === 'string' && data.message.trim()) {
-      appendMessage('assistant', data.message.trim())
-    }
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : '选择商品失败'
-  } finally {
-    isSelectingProduct.value = false
-    selectingProductCode.value = null
-  }
-}
-
-async function confirmOrder() {
-  if (!canConfirmOrder.value || isSending.value) return
-  errorMessage.value = ''
-  appendMessage('user', '确认下单')
-  const assistantMessageId = appendMessage('assistant', '')
-  isSending.value = true
-  streamStatus.value = '正在提交订单...'
-
-  try {
-    const res = await fetch(`/api/chat/${encodeURIComponent(sessionId.value)}/confirm`, {
-      method: 'POST',
-      headers: currentApiHeaders(),
-    })
-    if (!res.ok) {
-      let detail = `确认失败 ${res.status}`
-      try {
-        const errBody = await res.json()
-        detail = typeof errBody.detail === 'string' ? errBody.detail : detail
-      } catch { /* ignore */ }
-      throw new Error(detail)
-    }
-    const data = await res.json()
-    applyOrderPreview(data.order_preview)
-    if (isSubmittedPreview(data.order_preview)) {
-      setMessageOrderSuccess(assistantMessageId)
-    }
-    setMessageContent(assistantMessageId, data.answer || '已处理确认下单请求。')
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : '确认下单失败'
-    setMessageContent(assistantMessageId, '确认下单失败，请检查信息后重试。')
-  } finally {
-    isSending.value = false
-    streamStatus.value = ''
-  }
-}
-
-function cancelOrder() {
-  if (!canCancelOrder.value) return
-  sendMessage('取消，不用了')
 }
 
 async function sendMessage(text = inputText.value) {
@@ -602,101 +253,6 @@ async function sendMessage(text = inputText.value) {
   }
 }
 
-async function sendFallbackMessage(content: string, assistantMessageId: number) {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: currentApiHeaders(),
-      body: JSON.stringify({ session_id: sessionId.value, message: content }),
-    })
-    if (!res.ok) throw new Error(`请求失败 ${res.status}`)
-    const data = await res.json()
-    if (data.session_id) { sessionId.value = data.session_id; localStorage.setItem(SESSION_KEY, data.session_id) }
-    applyOrderPreview(data.order_preview)
-    setMessageContent(assistantMessageId, data.answer || '我已收到，会继续为您处理。')
-}
-
-async function sendStreamingMessage(content: string, assistantMessageId: number) {
-  const res = await fetch('/api/chat/stream', {
-    method: 'POST',
-    headers: currentApiHeaders(),
-    body: JSON.stringify({ session_id: sessionId.value, message: content }),
-  })
-  if (!res.ok || !res.body) throw new Error(`请求失败 ${res.status}`)
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let streamedAnswer = ''
-
-  const handleEvent = (event: StreamEvent) => {
-    if (event.type === 'session' && event.session_id) {
-      sessionId.value = event.session_id
-      localStorage.setItem(SESSION_KEY, event.session_id)
-      return
-    }
-    if (event.type === 'status') {
-      streamStatus.value = event.message || '正在处理您的请求...'
-      return
-    }
-    if (event.type === 'preview') {
-      applyOrderPreview(event.order_preview)
-      return
-    }
-    if (event.type === 'token') {
-      const chunk = event.content || ''
-      streamedAnswer += chunk
-      appendMessageContent(assistantMessageId, chunk)
-      return
-    }
-    if (event.type === 'final') {
-      if (event.session_id) {
-        sessionId.value = event.session_id
-        localStorage.setItem(SESSION_KEY, event.session_id)
-      }
-      applyOrderPreview(event.order_preview)
-      if (isSubmittedPreview(event.order_preview)) {
-        setMessageOrderSuccess(assistantMessageId)
-      }
-      setMessageContent(assistantMessageId, streamedAnswer || event.answer || '我已收到，会继续为您处理。')
-      return
-    }
-    if (event.type === 'error') {
-      const streamError = new Error(event.message || '智能体处理失败')
-      streamError.name = 'StreamEventError'
-      throw streamError
-    }
-  }
-
-  const parseAndHandleEvent = (line: string) => {
-    try {
-      handleEvent(JSON.parse(line))
-    } catch {
-      const streamError = new Error('流式响应格式异常，请稍后重试')
-      streamError.name = 'StreamEventError'
-      throw streamError
-    }
-  }
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      const text = line.trim()
-      if (!text) continue
-      parseAndHandleEvent(text)
-    }
-  }
-
-  const lastLine = buffer.trim()
-  if (lastLine) parseAndHandleEvent(lastLine)
-  if (!messages.value.find((item) => item.id === assistantMessageId)?.content) {
-    setMessageContent(assistantMessageId, '我已收到，会继续为您处理。')
-  }
-}
-
 function toggleListening() {
   if (isListening.value) { isListening.value = false; return }
   const R = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -714,33 +270,24 @@ function resetOrder() {
   orderPreview.value = null
 }
 
-function summarizeCurrentSession() {
-  const u = messages.value.find((m) => m.role === 'user')
-  if (!u) return
-  const title = [orderInfo.value.room_number, orderInfo.value.product, orderInfo.value.fault]
-    .filter(Boolean)
-    .join(' ') || u.content.slice(0, 16)
-  historySessions.value = [
-    { id: sessionId.value, title, status: canSubmit.value ? '待确认' : '信息待补充', time: currentTime() },
-    ...historySessions.value.filter((i) => i.id !== sessionId.value),
-  ].slice(0, 10)
-  persistHistory()
+function createNewSession() {
+  summarizeCurrentSession(orderInfo.value, canSubmit.value)
+  setSessionId(createSessionId())
+  inputText.value = ''; errorMessage.value = ''; isListening.value = false; isSending.value = false
+  resetMessages(); resetOrder(); refreshSuggestions(); showHistory.value = false
+  nextTick(() => chatBodyRef.value?.scrollTo({ top: 0 }))
 }
 
-function createNewSession() {
-  summarizeCurrentSession()
-  sessionId.value = createSessionId()
-  localStorage.setItem(SESSION_KEY, sessionId.value)
-  inputText.value = ''; errorMessage.value = ''; isListening.value = false; isSending.value = false
-  messages.value = []; resetOrder(); refreshSuggestions(); showHistory.value = false
-  nextTick(() => chatBodyRef.value?.scrollTo({ top: 0 }))
+function cancelOrder() {
+  if (!canCancelOrder.value) return
+  sendMessage('取消，不用了')
 }
 
 function statusStyle(status: string) {
   return {
-    '待确认':    'bg-amber-100 text-amber-700',
-    '已派单':    'bg-blue-100 text-blue-700',
-    '已完成':    'bg-emerald-100 text-emerald-700',
+    '待确认': 'bg-amber-100 text-amber-700',
+    '已派单': 'bg-blue-100 text-blue-700',
+    '已完成': 'bg-emerald-100 text-emerald-700',
     '信息待补充': 'bg-slate-100 text-slate-600',
   }[status] ?? 'bg-slate-100 text-slate-500'
 }
