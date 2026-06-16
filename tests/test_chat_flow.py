@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from graph.builder import (
+from workflow.builder import (
     clear_checkpoint_session,
     confirm_order_in_session,
     run_agent,
@@ -28,7 +28,7 @@ DEFAULT_API_PARAMS = {
     # 与 frontend/src/utils/apiParams.ts 的开发默认值保持一致。
     "access_token": "replace-with-test-token",
     "user_id": "dev-user",
-    "tenant_id": "2123",
+    "tenant_id": "2131",
     "platform": "ios",
     "app_type": "2",
     "device_id": "1234567890",

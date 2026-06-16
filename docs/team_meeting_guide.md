@@ -130,14 +130,14 @@ api/
 schemas/
   chat.py                # 对话请求/响应
   user.py                # UserContext、会话 thread_id
-graph/
+workflow/
   builder.py             # LangGraph 节点与路由（核心）
   state.py               # AgentState 定义
   llm.py                 # LLM 客户端
   expected_time.py       # 自然语言时间解析
   agent.py               # 辅助 Agent（闲聊/工具）
 prompts/                 # 文件化 Prompt（intent/ask/confirm/submit...）
-rag/                     # SPU 加载、向量库、Embedding
+repositories/                     # SPU 加载、向量库、Embedding
 tools/
   product_search.py      # 商品检索工具
   order_submit.py        # 真实下单组装与提交
@@ -210,7 +210,7 @@ LLM 结构化输出，字段包括：
 |------|------|
 | `POST /app-api/order/hosting-card/card` | 酒店名、地址、省市区、经纬度、套餐卡 ID（等同 App `selectedAddress`） |
 | `POST /app-api/system/profile/get` | 联系人、手机号（等同 App `userStore`） |
-| `POST /app-api/system/config/getManagedRepairGlobal` | 响应时间（紧急/普通） |
+| `POST /app-api/system/core/getManagedRepairGlobal` | 响应时间（紧急/普通） |
 | `POST /app-api/system/managed-repair-order-homepage/area-tree-list` | 一级区域 ID（客房/公区） |
 
 再查 admin SPU 详情，组装后调用：
@@ -573,11 +573,11 @@ QWEN_EMBEDDING_API_KEY=...           # 商品向量
 
 | 路径 | 说明 |
 |------|------|
-| `graph/builder.py` | LangGraph 节点、路由、运行入口 |
+| `workflow/builder.py` | LangGraph 节点、路由、运行入口 |
 | `tools/order_submit.py` | 托管维修下单组装 |
 | `api/deps.py` | 网关 Header 鉴权 |
 | `schemas/user.py` | UserContext、thread_id |
-| `rag/product_store.py` | 商品向量检索 |
+| `repositories/product_store.py` | 商品向量检索 |
 | `frontend/src/App.vue` | Web 主界面 |
 | `frontend/src/utils/apiParams.ts` | 可调接口参数 |
 

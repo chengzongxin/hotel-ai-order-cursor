@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from config.settings import settings
+from core.settings import settings
 from schemas.user import UserContext
 from tools.protocol import ToolErrorCode, ToolResult, error_response, success_response
 

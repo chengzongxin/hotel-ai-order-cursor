@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from graph.expected_time import (
+from workflow.expected_time import (
     infer_expected_start_time_from_message,
     looks_like_expected_start_time,
     merge_expected_start_time,

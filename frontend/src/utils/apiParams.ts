@@ -38,9 +38,9 @@ export const API_PARAM_FIELDS: ApiParamField[] = [
 
 export function getDefaultApiParams(): ApiRequestParams {
   return {
-    accessToken: import.meta.env.VITE_ACCESS_TOKEN ?? 'd5d15b2e6fc7480b9fe87ea8f43591c0',
+    accessToken: import.meta.env.VITE_ACCESS_TOKEN ?? '6c8ee07c632a407fa4ee9236a044a8d7',
     userId: import.meta.env.VITE_USER_ID ?? 'dev-user',
-    tenantId: import.meta.env.VITE_TENANT_ID ?? '2123',
+    tenantId: import.meta.env.VITE_TENANT_ID ?? '2131',
     platform: import.meta.env.VITE_APP_PLATFORM ?? 'ios',
     appType: import.meta.env.VITE_APP_TYPE ?? '2',
     deviceId: import.meta.env.VITE_DEVICE_ID ?? '1234567890',

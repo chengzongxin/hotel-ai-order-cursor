@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from graph.expected_time import parse_expected_time_to_range
+from workflow.expected_time import parse_expected_time_to_range
 from schemas.user import UserContext
 from tools.order_submit_common import (
     SERVICE_SPU_CATEGORY_TYPE_LIST,

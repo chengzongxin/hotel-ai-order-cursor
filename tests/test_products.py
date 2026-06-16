@@ -1,6 +1,6 @@
 """商品状态辅助函数单元测试。"""
 
-from graph.products import (
+from workflow.products import (
     derive_product_section_fields,
     find_product_by_code,
     get_selected_product,

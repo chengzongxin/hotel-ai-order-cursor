@@ -16,7 +16,7 @@ def get_project_root() -> str:
 def get_abs_path(relative_path: str) -> str:
     """
     将工程内的相对路径转为绝对路径（统一路径基准）
-    :param relative_path: 相对于工程根目录的路径，如 "config/rag.yml"
+    :param relative_path: 相对于工程根目录的路径，如 "core/rag.yml"
     :return: 绝对路径
     """
     project_root = get_project_root()

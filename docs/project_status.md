@@ -62,7 +62,7 @@ flowchart LR
 | `assist_node` | 无活跃订单时的闲聊与工具问答 |
 | `confirm_node` | 展示预下单信息，等待确认 |
 | `cancel_node` | 取消并清空预下单状态 |
-| `submit_node` | 经 `graph/submission.py` 提交订单，写入 `submitted_order` 并清空活跃单 |
+| `submit_node` | 经 `workflow/submission.py` 提交订单，写入 `submitted_order` 并清空活跃单 |
 
 **已实现的具体能力：**
 
@@ -76,7 +76,7 @@ flowchart LR
 | 预下单卡片 | `order_context` + `order_card_fields` 驱动前端渲染与编辑 |
 | 多轮收集 | `order_info` 增量合并，一次只追问一个 `missing_info` 字段 |
 | 公区/客房判断 | 关键词 + 房号规则；公区自动 `room_number = /` |
-| 期待开工时间 | 支持「明天上午」「3月20日」等自然语言（`graph/expected_time.py`） |
+| 期待开工时间 | 支持「明天上午」「3月20日」等自然语言（`workflow/expected_time.py`） |
 | 确认/取消 | `phase`：`idle` → `collecting` → `product_selection` → `pre_order` → `submitted` / `cancelled` |
 | 确定性提交 | 前端确认按钮走 `POST /confirm`，不经 LLM 重新识别 |
 | 偏题处理 | 下单过程中闲聊走 `ask_node`；无活跃单时走 `assist_node` |
@@ -98,9 +98,9 @@ flowchart LR
 
 | 能力 | 实现位置 |
 | --- | --- |
-| Excel SPU 加载 | `rag/spu_loader.py` + `assets/spu.xlsx` |
-| Qwen embedding 向量化 | `rag/qwen_embedding.py` |
-| Chroma 向量库 | `rag/product_store.py`，持久化到 `data/chroma_db/` |
+| Excel SPU 加载 | `repositories/spu_loader.py` + `assets/spu.xlsx` |
+| Qwen embedding 向量化 | `repositories/qwen_embedding.py` |
+| Chroma 向量库 | `repositories/product_store.py`，持久化到 `data/chroma_db/` |
 | 关键词 + 向量混合检索 | jieba 分词过滤 + 余弦相似度排序 |
 | 故障惩罚 | 用户有故障描述时，安装/测量类商品扣 0.15 分 |
 | 自动重建索引 | Excel / 模型 / 版本变化时自动重建 |
@@ -132,7 +132,7 @@ has_fault 惩罚（安装/测量类扣分）
 | 结构化意图输出 | `intent_node` 使用 `with_structured_output(IntentResult)` |
 | 追问生成 | 大部分字段 LLM 生成；时间/货物到场用固定话术 |
 | 辅助 Agent | `assist_node` + `create_agent()`，可调用工具 |
-| Middleware | 日志、重试、模型/工具调用次数限制（`graph/middleware.py`） |
+| Middleware | 日志、重试、模型/工具调用次数限制（`workflow/middleware.py`） |
 
 **辅助 Agent 可用工具：**
 
@@ -294,7 +294,7 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 | 待实现项 | 说明 |
 | --- | --- |
 | Redis / Qdrant 真正接入 | 或删除冗余配置，避免误导 |
-| `builder.py` 进一步模块化 | 节点拆分到 `graph/nodes/`（进行中：constants/checkpoint 等已抽离） |
+| `builder.py` 进一步模块化 | 节点拆分到 `workflow/nodes/`（进行中：constants/checkpoint 等已抽离） |
 | Prompt 版本管理与 A/B | 目前只有文件，无版本追踪 |
 | 服务端 ASR | 现仅浏览器 Web Speech，酒店嘈杂环境不稳定 |
 | 订单状态查询/改单/撤单 | 提交后仅保留 `last_order` 摘要 |
@@ -324,19 +324,19 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 | `app/main.py` | FastAPI 应用入口 |
 | `api/routes.py` | HTTP 路由 |
 | `api/deps.py` | 用户鉴权与会话校验 |
-| `graph/builder.py` | LangGraph 节点、路由、运行入口（facade） |
-| `graph/constants.py` | 阶段常量与关键词 |
-| `graph/text_parsing.py` | 商品选择/房号/公区解析 |
-| `graph/checkpoint.py` | SQLite checkpoint 读写 |
-| `graph/order_fields.py` | 预下单卡片字段生成 |
-| `graph/submission.py` | 真实提交编排 |
-| `graph/state.py` | AgentState 定义 |
-| `graph/expected_time.py` | 期待开工时间解析 |
-| `graph/agent.py` | 辅助 Agent（create_agent） |
-| `graph/middleware.py` | Agent middleware |
+| `workflow/builder.py` | LangGraph 节点、路由、运行入口（facade） |
+| `workflow/constants.py` | 阶段常量与关键词 |
+| `workflow/text_parsing.py` | 商品选择/房号/公区解析 |
+| `workflow/checkpoint.py` | SQLite checkpoint 读写 |
+| `workflow/order_fields.py` | 预下单卡片字段生成 |
+| `workflow/submission.py` | 真实提交编排 |
+| `workflow/state.py` | AgentState 定义 |
+| `workflow/expected_time.py` | 期待开工时间解析 |
+| `workflow/agent.py` | 辅助 Agent（create_agent） |
+| `workflow/middleware.py` | Agent middleware |
 | `prompts/` | 文件化 Prompt |
-| `rag/product_store.py` | Chroma 向量库 + 关键词过滤 |
-| `rag/spu_loader.py` | Excel SPU 加载 |
+| `repositories/product_store.py` | Chroma 向量库 + 关键词过滤 |
+| `repositories/spu_loader.py` | Excel SPU 加载 |
 | `tools/product_search.py` | 商品检索工具 |
 | `tools/order_submit.py` | 真实下单入口与分发 |
 | `tools/order_submit_managed.py` | 托管维修提交 |

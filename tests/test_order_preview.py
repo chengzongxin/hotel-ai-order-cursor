@@ -1,6 +1,6 @@
 """order_preview 结构单元测试。"""
 
-from graph.products import get_selected_product, resolve_selected_code
+from workflow.products import get_selected_product, resolve_selected_code
 from schemas.order_preview import build_order_preview_model, build_product_section
 
 

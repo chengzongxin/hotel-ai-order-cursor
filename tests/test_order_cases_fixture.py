@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from graph.builder import build_missing_info_fallback_question
+from workflow.builder import build_missing_info_fallback_question
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "order_cases.json"

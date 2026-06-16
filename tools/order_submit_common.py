@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from config.settings import settings
+from core.settings import settings
 from schemas.user import UserContext
 
 JsonDict = dict[str, Any]

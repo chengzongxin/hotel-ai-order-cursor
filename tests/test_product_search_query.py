@@ -1,6 +1,6 @@
 """商品检索 query 构造逻辑测试。"""
 
-from graph.products import build_product_search_query
+from workflow.products import build_product_search_query
 
 
 def test_build_query_with_product_and_fault():

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import HumanMessage
 
-from graph.builder import (
+from workflow.builder import (
     ask_node,
     build_order_preview,
     coverage_node,
@@ -50,7 +50,7 @@ async def mock_product_search(monkeypatch: pytest.MonkeyPatch, products: list[di
             },
         }
 
-    monkeypatch.setattr("graph.builder.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr("workflow.builder.asyncio.to_thread", fake_to_thread)
 
 
 def merge_state(state: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
@@ -159,7 +159,7 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
     async def fake_emit_token_text(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("workflow.builder.emit_token_text", fake_emit_token_text)
     answer = await ask_node(state)
     trace_step("ask_node output after rejection", answer=answer)
     assert "再详细描述商品和故障现象" in answer["messages"][0].content
@@ -220,9 +220,9 @@ async def test_managed_product_selection_keeps_hosting_coverage(monkeypatch, tra
             },
         }
 
-    monkeypatch.setattr("graph.builder.check_hosting_product_coverage", fake_check_hosting_product_coverage)
+    monkeypatch.setattr("workflow.builder.check_hosting_product_coverage", fake_check_hosting_product_coverage)
     monkeypatch.setattr(
-        "graph.builder.user_from_runtime_config",
+        "workflow.builder.user_from_runtime_config",
         lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
     )
 

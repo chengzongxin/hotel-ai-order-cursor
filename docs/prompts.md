@@ -1,6 +1,6 @@
 # Prompt 目录说明
 
-所有生产路径的 Prompt 均放在 `prompts/`，通过 `graph/prompts.py` 的 `load_prompt` / `render_prompt` 加载。
+所有生产路径的 Prompt 均放在 `prompts/`，通过 `workflow/prompts.py` 的 `load_prompt` / `render_prompt` 加载。
 
 ## 核心规则
 
@@ -47,13 +47,13 @@
 
 | 位置 | 说明 |
 | --- | --- |
-| `build_missing_info_fallback_question` | 缺字段固定追问（含时间、货物状态） |
-| `build_product_search_feedback` | 商品匹配成功前缀（`graph/products.py`，对话气泡与 API 推导共用） |
+| `workflow/questions.py::build_missing_info_fallback_question` | 缺字段固定追问（含时间、货物状态） |
+| `build_product_search_feedback` | 商品匹配成功前缀（`workflow/products.py`，对话气泡与 API 推导共用） |
 | `assist_node` 空回复兜底 | 引导用户提供房号、商品、问题 |
 | `submit_node` 失败分支 | 未真提交、缺参数、地址接口失败等 |
-| `build_topic_boundary_response` | `next_question` 部分硬编码 |
+| `workflow/questions.py::build_topic_boundary_response` | `next_question` 部分硬编码 |
 
 ## 修改注意
 
 - 改 `.md` 后需重启进程（`load_prompt` 带 `@lru_cache`）。
-- 同步更新 `graph/builder.py`、`graph/agent.py` 与本文件。
+- 同步更新 `workflow/builder.py`、`workflow/questions.py`、`workflow/agent.py` 与本文件。

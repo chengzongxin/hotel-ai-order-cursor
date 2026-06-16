@@ -1,33 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-
-interface ProductItem {
-  service_product_code: string
-  service_product_name: string
-  product_type: string
-  category: string
-  service_order_type: string
-  unit: string
-  price: string
-  price_status: string
-  related_category: string
-  related_area: string
-  fault_phenomenon: string
-  remark: string
-}
-
-interface SearchResult {
-  score: number
-  service_product_code: string
-  service_product_name: string
-  service_order_type: string
-  product_type: string
-  related_area: string
-  fault_phenomenon: string
-  price: string
-  unit: string
-}
+import type {
+  ProductItem,
+  ProductSearchDiagnosticCandidate,
+  ProductSearchDiagnostics,
+  ProductSearchResponse,
+  ProductSearchResult,
+} from '../types/product'
 
 const SERVICE_TYPES = ['全部', '单次维修服务', '单次安装', '单次测量', '托管维修']
 
@@ -53,10 +33,12 @@ const searchFault = ref('')
 const topK = ref(5)
 const threshold = ref(0.4)
 const showParams = ref(false)
+const includeDiagnostics = ref(false)
 const searching = ref(false)
 const searchError = ref('')
-const searchResults = ref<SearchResult[]>([])
+const searchResults = ref<ProductSearchResult[]>([])
 const lastQuery = ref('')
+const lastDiagnostics = ref<ProductSearchDiagnostics | null>(null)
 
 const actualQuery = computed(() =>
   [searchProduct.value, searchFault.value].filter(Boolean).join(' ').trim()
@@ -104,12 +86,48 @@ function serviceTypeBadge(type: string) {
   } as Record<string, string>)[type] ?? 'bg-slate-50 text-slate-500 border-slate-200'
 }
 
+function formatPercent(score?: number | null) {
+  return typeof score === 'number' ? `${(score * 100).toFixed(1)}%` : '—'
+}
+
+function formatPenalty(penalty?: number | null) {
+  if (!penalty) return '0'
+  return `-${(penalty * 100).toFixed(0)}`
+}
+
+function formatBonus(bonus?: number | null) {
+  if (!bonus) return '0'
+  return `+${(bonus * 100).toFixed(0)}`
+}
+
+function faultOverlapLabel(value?: boolean | null) {
+  if (value === true) return '故障匹配'
+  if (value === false) return '故障不匹配'
+  return '无故障文本'
+}
+
+function filterReasonLabel(reason?: string | null) {
+  return ({
+    keyword_mismatch: '关键词不匹配',
+    below_threshold: '低于阈值',
+    outside_top_k: '未进 Top-K',
+  } as Record<string, string>)[reason || ''] ?? reason ?? '命中'
+}
+
+function diagnosticTone(candidate: ProductSearchDiagnosticCandidate) {
+  if (candidate.included) return 'border-emerald-100 bg-emerald-50/60 text-emerald-700'
+  if (candidate.filtered_reason === 'keyword_mismatch') return 'border-slate-100 bg-slate-50 text-slate-500'
+  if (candidate.filtered_reason === 'below_threshold') return 'border-amber-100 bg-amber-50/60 text-amber-700'
+  return 'border-slate-100 bg-white text-slate-500'
+}
+
 function applyPreset(preset: typeof PRESETS[0]) {
   searchProduct.value = preset.product
   searchFault.value   = preset.fault
   searchResults.value = []
   searchError.value   = ''
   lastQuery.value     = ''
+  lastDiagnostics.value = null
 }
 
 function fillFromProduct(product: ProductItem) {
@@ -117,6 +135,7 @@ function fillFromProduct(product: ProductItem) {
   searchFault.value   = ''
   searchResults.value = []
   lastQuery.value     = ''
+  lastDiagnostics.value = null
 }
 
 async function loadProducts() {
@@ -141,6 +160,7 @@ async function doSearch() {
   searchError.value = ''
   searchResults.value = []
   lastQuery.value = ''
+  lastDiagnostics.value = null
   try {
     const res = await fetch('/api/products/search', {
       method: 'POST',
@@ -149,12 +169,15 @@ async function doSearch() {
         query,
         top_k:     topK.value,
         threshold: threshold.value,
+        has_fault: Boolean(searchFault.value.trim()),
+        include_diagnostics: includeDiagnostics.value,
       }),
     })
     if (!res.ok) throw new Error(`请求失败 ${res.status}`)
-    const data = await res.json()
+    const data = await res.json() as ProductSearchResponse
     searchResults.value = data.products
     lastQuery.value     = data.query
+    lastDiagnostics.value = data.diagnostics ?? null
   } catch (e) {
     searchError.value = e instanceof Error ? e.message : '检索失败'
   } finally {
@@ -168,6 +191,7 @@ function clearSearch() {
   searchResults.value = []
   searchError.value   = ''
   lastQuery.value     = ''
+  lastDiagnostics.value = null
 }
 
 onMounted(() => loadProducts())
@@ -276,6 +300,10 @@ onMounted(() => loadProducts())
                 class="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-indigo-300"
               />
             </div>
+            <label class="col-span-2 flex items-center justify-between rounded-lg border border-slate-100 bg-white px-2.5 py-2">
+              <span class="text-[11px] font-medium text-slate-500">返回检索诊断</span>
+              <input v-model="includeDiagnostics" type="checkbox" class="h-4 w-4 accent-indigo-600" />
+            </label>
           </div>
 
           <div class="mt-3 flex gap-2">
@@ -303,6 +331,54 @@ onMounted(() => loadProducts())
         <div v-if="lastQuery" class="shrink-0 border-b border-slate-50 bg-slate-50/60 px-4 py-2">
           <p class="text-[10px] text-slate-400">向量检索 query</p>
           <p class="mt-0.5 font-mono text-[12px] font-medium text-indigo-600">"{{ lastQuery }}"</p>
+        </div>
+
+        <div v-if="lastDiagnostics" class="shrink-0 border-b border-slate-100 bg-white px-4 py-3">
+          <div class="mb-2 flex items-center justify-between">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">检索诊断</p>
+            <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+              {{ lastDiagnostics.returned_count ?? searchResults.length }} / {{ lastDiagnostics.candidates?.length || 0 }}
+            </span>
+          </div>
+          <div class="grid grid-cols-3 gap-1.5 text-center">
+            <div class="rounded-lg bg-slate-50 px-2 py-1.5">
+              <p class="text-[10px] text-slate-400">阈值</p>
+              <p class="text-[12px] font-semibold text-slate-700">{{ lastDiagnostics.threshold ?? '—' }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-2 py-1.5">
+              <p class="text-[10px] text-slate-400">故障惩罚</p>
+              <p class="text-[12px] font-semibold text-slate-700">{{ lastDiagnostics.has_fault ? '启用' : '关闭' }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-2 py-1.5">
+              <p class="text-[10px] text-slate-400">回退</p>
+              <p class="text-[12px] font-semibold text-slate-700">{{ lastDiagnostics.fallback_to_vector_results ? '是' : '否' }}</p>
+            </div>
+          </div>
+          <div class="mt-2 max-h-52 space-y-1.5 overflow-y-auto pr-1">
+            <div
+              v-for="candidate in lastDiagnostics.candidates || []"
+              :key="candidate.service_product_code || candidate.service_product_name || 'candidate'"
+              class="rounded-lg border px-2.5 py-2"
+              :class="diagnosticTone(candidate)"
+            >
+              <div class="flex items-start gap-2">
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-[12px] font-semibold">{{ candidate.service_product_name || '未知商品' }}</p>
+                  <p class="mt-0.5 font-mono text-[10px] opacity-70">{{ candidate.service_product_code || '—' }}</p>
+                </div>
+                <span class="shrink-0 rounded-md bg-white/70 px-1.5 py-0.5 text-[10px] font-semibold">
+                  {{ filterReasonLabel(candidate.filtered_reason) }}
+                </span>
+              </div>
+              <div class="mt-1.5 grid grid-cols-4 gap-1 text-[10px] opacity-80">
+                <span>向量 {{ formatPercent(candidate.vector_score) }}</span>
+                <span>调整 {{ formatPercent(candidate.adjusted_score) }}</span>
+                <span>加分 {{ formatBonus(candidate.bonus) }}</span>
+                <span>惩罚 {{ formatPenalty(candidate.penalty) }}</span>
+              </div>
+              <p class="mt-1 text-[10px] opacity-70">{{ faultOverlapLabel(candidate.fault_keyword_overlap) }}</p>
+            </div>
+          </div>
         </div>
 
         <!-- 错误 -->

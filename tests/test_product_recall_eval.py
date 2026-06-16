@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from rag.product_store import ProductVectorStore
+from repositories.product_store import ProductVectorStore
 
 RECALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "product_recall_cases.json"
 _RECALL_CASES: list[dict[str, Any]] = json.loads(RECALL_FIXTURE_PATH.read_text(encoding="utf-8"))["cases"]
