@@ -9,18 +9,10 @@ from typing import Any
 import pytest
 
 
-# 让 `uv run pytest` 可以直接从项目根目录导入 workflow/api/tools 等本地模块。
+# 让 `uv run pytest` 可以直接从项目根目录导入 graph/api/tools 等本地模块。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-# 单元测试默认不做远程 tracing，避免离线环境下 LangSmith 后台上报报错。
-# 如需调试 tracing，可显式设置 PYTEST_ENABLE_LANGSMITH=1。
-if os.getenv("PYTEST_ENABLE_LANGSMITH") != "1":
-    os.environ["PYTEST_DISABLE_LANGSMITH"] = "1"
-    os.environ["LANGSMITH_TRACING"] = "false"
-    os.environ["LANGCHAIN_TRACING_V2"] = "false"
-    os.environ["LANGCHAIN_TRACING"] = "false"
 
 _PYTEST_TRACE_ENABLED = False
 

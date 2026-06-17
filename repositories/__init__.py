@@ -1,1 +1,0 @@
-"""Embedding based retrieval package."""

@@ -6,15 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from api.deps import get_current_user
-from workflow.builder import run_agent, stream_agent_events
-from workflow.checkpoint import clear_checkpoint_session, get_checkpoint_messages, get_checkpoint_state
-from workflow.preview import build_order_preview
-from workflow.session_actions import (
+from graph.builder import (
+    build_order_preview,
+    clear_checkpoint_session,
     confirm_order_in_session,
+    get_checkpoint_messages,
+    get_checkpoint_state,
+    run_agent,
     select_product_in_session,
+    stream_agent_events,
     update_order_info_in_session,
 )
-from repositories.spu_loader import SpuExcelLoader
+from rag.spu_loader import SpuExcelLoader
 from schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -211,13 +214,7 @@ async def list_products(
 async def search_products(request: ProductSearchRequest) -> ProductSearchResponse:
     result = await asyncio.to_thread(
         search_product_tool.invoke,
-        {
-            "query": request.query,
-            "top_k": request.top_k,
-            "threshold": request.threshold,
-            "has_fault": request.has_fault,
-            "include_diagnostics": request.include_diagnostics,
-        },
+        {"query": request.query, "top_k": request.top_k, "threshold": request.threshold},
     )
     data = result.get("data", {})
     products = data.get("products") or []
@@ -239,5 +236,4 @@ async def search_products(request: ProductSearchRequest) -> ProductSearchRespons
         query=data.get("query", request.query),
         count=len(mapped_products),
         products=mapped_products,
-        diagnostics=data.get("diagnostics") if request.include_diagnostics else None,
     )

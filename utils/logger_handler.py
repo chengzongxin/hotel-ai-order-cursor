@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from core.settings import settings
+from config.settings import settings
 from utils.path_tools import get_abs_path
 
 LOG_ROOT = get_abs_path("logs")

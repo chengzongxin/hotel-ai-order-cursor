@@ -7,7 +7,7 @@ from typing import Literal, TypedDict
 import aiosqlite
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from core.settings import settings
+from config.settings import settings
 
 Role = Literal["human", "ai", "system"]
 

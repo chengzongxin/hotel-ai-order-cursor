@@ -2,9 +2,9 @@
 
 import pytest
 
-from workflow.order_fields import build_order_card_fields
+from graph.order_fields import build_order_card_fields
 
-from workflow.builder import (
+from graph.builder import (
     build_order_preview,
     build_missing_info_fallback_question,
     normalize_order_card_update,
@@ -24,7 +24,7 @@ async def test_search_product_node_skips_research_on_confirm(monkeypatch):
         return {"status": "success", "data": {"products": [], "query": args["query"], "count": 0}}
 
     monkeypatch.setattr(
-        "workflow.builder.asyncio.to_thread",
+        "graph.builder.asyncio.to_thread",
         lambda func, args: fake_invoke(args),
     )
 
@@ -54,7 +54,7 @@ async def test_search_product_node_preserves_selected_code(monkeypatch):
             "data": {"products": tool_products, "query": arg["query"], "count": 2},
         }
 
-    monkeypatch.setattr("workflow.builder.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr("graph.builder.asyncio.to_thread", fake_to_thread)
 
     result = await search_product_node(
         {
@@ -143,10 +143,10 @@ async def test_submit_node_keeps_pre_order_when_real_submit_disabled(monkeypatch
     async def fake_emit_token_text(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("workflow.submission.submit_real_order", fake_submit_real_order)
-    monkeypatch.setattr("workflow.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("graph.submission.submit_real_order", fake_submit_real_order)
+    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
     monkeypatch.setattr(
-        "workflow.builder.user_from_runtime_config",
+        "graph.builder.user_from_runtime_config",
         lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
     )
 
@@ -193,10 +193,10 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
     async def fake_emit_token_text(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("workflow.submission.submit_real_order", fake_submit_real_order)
-    monkeypatch.setattr("workflow.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("graph.submission.submit_real_order", fake_submit_real_order)
+    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
     monkeypatch.setattr(
-        "workflow.builder.user_from_runtime_config",
+        "graph.builder.user_from_runtime_config",
         lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
     )
 

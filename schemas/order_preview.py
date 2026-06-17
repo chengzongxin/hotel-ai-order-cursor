@@ -238,7 +238,7 @@ def build_product_section(
     selection_rejected: bool = False,
 ) -> ProductSection:
     """将状态机中的商品列表映射为 API 对外结构。"""
-    from workflow.products import resolve_selected_code
+    from graph.products import resolve_selected_code
 
     resolved_code = resolve_selected_code(products, selected_code, default_to_first=False)
 
@@ -260,7 +260,7 @@ def build_product_section(
 
 def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     """从 LangGraph state 构造结构化 OrderPreview。"""
-    from workflow.products import derive_product_section_fields, get_selected_product
+    from graph.products import derive_product_section_fields, get_selected_product
 
     order_info_raw = state.get("order_info") or {}
     products = state.get("products") or []

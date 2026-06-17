@@ -1,6 +1,6 @@
 from langchain_tavily import TavilySearch
 
-from core.settings import settings
+from config.settings import settings
 
 web_search_tool = TavilySearch(
     max_results=5,

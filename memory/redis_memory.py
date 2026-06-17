@@ -4,7 +4,7 @@ from typing import Literal, TypedDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from redis.asyncio import Redis
 
-from core.settings import settings
+from config.settings import settings
 
 Role = Literal["human", "ai"]
 

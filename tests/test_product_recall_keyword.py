@@ -1,12 +1,6 @@
 """商品召回关键词重叠纯逻辑测试（无 embedding 依赖）。"""
 
-from repositories.product_store import (
-    FAULT_MATCH_BONUS,
-    FAULT_MISMATCH_PENALTY,
-    NO_FAULT_PENALTY,
-    _has_keyword_overlap,
-    _keyword_overlap_tokens,
-)
+from rag.product_store import NO_FAULT_PENALTY, _has_keyword_overlap, _keyword_overlap_tokens
 
 
 def test_keyword_overlap_tokens_expands_query_chars():
@@ -36,8 +30,3 @@ def test_has_keyword_overlap_ac_query():
 
 def test_no_fault_penalty_constant():
     assert NO_FAULT_PENALTY == 0.15
-
-
-def test_fault_rerank_constants_are_conservative():
-    assert FAULT_MATCH_BONUS == 0.05
-    assert FAULT_MISMATCH_PENALTY == 0.05

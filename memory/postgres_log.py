@@ -3,8 +3,8 @@ from uuid import uuid4
 from sqlalchemy import insert
 from sqlalchemy.exc import SQLAlchemyError
 
-from core.settings import settings
-from core.database import conversation_logs, engine
+from config.settings import settings
+from config.database import conversation_logs, engine
 
 
 async def save_conversation_log(session_id: str, role: str, content: str) -> None:
