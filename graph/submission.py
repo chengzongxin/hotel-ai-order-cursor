@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage
 from graph.products import format_service_type_display, get_selected_product
 from graph.prompts import render_prompt
 from graph.state import AgentState
+from domain.events import OrderSubmitted, event_to_state_patch
 from schemas.user import UserContext
 from tools.order_submit import submit_real_order
 from utils.logger_handler import trace_logger
@@ -260,6 +261,16 @@ async def submit_order_from_state(
                 "order_info": order_info,
             }
         )
+    output.update(
+        event_to_state_patch(
+            OrderSubmitted(
+                payload={
+                    "submission": submission,
+                    "phase": output.get("phase"),
+                }
+            )
+        )
+    )
     trace_logger(
         "node.submit.output",
         answer=answer,

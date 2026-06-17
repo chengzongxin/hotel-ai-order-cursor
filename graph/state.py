@@ -4,6 +4,15 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 
+def add_order_events(
+    left: list[dict[str, Any]] | None,
+    right: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Append workflow events emitted by nodes and deterministic API updates."""
+
+    return [*(left or []), *(right or [])]
+
+
 class AgentState(TypedDict, total=False):
     """LangGraph 运行时状态。
 
@@ -78,3 +87,7 @@ class AgentState(TypedDict, total=False):
 
     # 用户最近一轮输入，方便节点快速读取，不必总是解析 messages。
     last_user_message: str
+
+    # 订单流程事件日志，用于审计关键状态变化和后续问题回放。
+    order_events: Annotated[list[dict[str, Any]], add_order_events]
+    last_order_event: str | None

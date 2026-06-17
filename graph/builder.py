@@ -22,7 +22,6 @@ from graph.expected_time import (
 )
 from graph.order_fields import (
     DEFAULT_URGENCY,
-    build_order_card_fields,
     collect_missing_order_info,
     get_required_order_fields,
     normalize_goods_arrival_status,
@@ -33,10 +32,14 @@ from graph.products import (
     build_product_search_query,
     find_product_by_code,
     get_selected_product,
-    resolve_selected_code,
 )
 from graph.state import AgentState
 from graph.submission import empty_submission, get_effective_service_type, submit_order_from_state
+from domain.events import OrderCancelled, OrderConfirmed, UserMessageReceived, event_to_state_patch
+from services.order_workflow import OrderWorkflowService
+from services.order_normalizer import normalize_order_defaults
+from services.order_context_service import load_order_context
+from services.order_routing import resolve_order_submit_route
 from memory.postgres_log import save_conversation_log
 from schemas.user import (
     SessionAccessError,
@@ -68,26 +71,16 @@ from graph.streaming import emit_status, emit_token_text, message_chunk_to_text,
 from graph.text_parsing import (
     build_product_recommendation_text,
     build_selected_product_text,
-    extract_room_number,
     format_service_type,
     format_urgency,
     is_cancel_request,
-    is_guest_room_text,
-    is_public_area_text,
     parse_product_selection,
 )
 from tools.hosting_coverage import check_hosting_product_coverage
-from tools.order_context import load_managed_repair_order_context
 from tools.product_search import search_product_tool
 
-def resolve_order_submit_route(service_type: str | None) -> str | None:
-    route_map = {
-        "托管维修": "managed_repair",
-        "单次维修服务": "single_repair",
-        "单次安装": "single_install",
-        "单次测量": "single_measure",
-    }
-    return route_map.get(service_type or "")
+def get_order_workflow_service() -> OrderWorkflowService:
+    return OrderWorkflowService()
 
 
 class IntentResult(BaseModel):
@@ -153,68 +146,6 @@ def get_product_search_feedback(state: AgentState) -> str | None:
         selected_product=selected_product,
         service_type=get_effective_service_type(state) or selected_product.get("service_order_type"),
     )
-
-
-def normalize_order_defaults(
-    service_type: str | None,
-    order_info: dict[str, object],
-    last_user_message: str = "",
-) -> dict[str, object]:
-    normalized = dict(order_info)
-
-    if service_type in {"托管维修", "单次维修服务"} and not normalized.get("urgency"):
-        normalized["urgency"] = DEFAULT_URGENCY
-
-    if normalized.get("goods_arrival_status"):
-        normalized_status = normalize_goods_arrival_status(str(normalized.get("goods_arrival_status")))
-        if normalized_status:
-            normalized["goods_arrival_status"] = normalized_status
-        else:
-            normalized.pop("goods_arrival_status", None)
-
-    if service_type == "托管维修":
-        if not normalized.get("room_number"):
-            inferred_room_number = extract_room_number(last_user_message)
-            if inferred_room_number:
-                normalized["room_number"] = inferred_room_number
-
-        room_number = str(normalized.get("room_number") or "").strip()
-        area = str(normalized.get("area") or "")
-        scope = normalized.get("managed_repair_scope")
-        if room_number and room_number != "/":
-            normalized["managed_repair_scope"] = "客房"
-            normalized["area"] = "客房"
-        elif scope == "客房" or is_guest_room_text(area) or is_guest_room_text(last_user_message):
-            normalized["managed_repair_scope"] = "客房"
-            normalized["area"] = "客房"
-        elif scope == "公区" or is_public_area_text(area) or is_public_area_text(last_user_message):
-            normalized["managed_repair_scope"] = "公区"
-            normalized["area"] = "公区"
-            normalized["room_number"] = "/"
-        elif scope not in VALID_MANAGED_REPAIR_SCOPES:
-            normalized.pop("managed_repair_scope", None)
-
-    inferred_time = infer_expected_start_time_from_message(last_user_message)
-    existing_time = normalize_expected_start_time_text(
-        str(normalized.get("expected_start_time") or "") or None
-    )
-    merged_time = merge_expected_start_time(existing_time, inferred_time)
-    if merged_time:
-        normalized["expected_start_time"] = merged_time
-
-    return normalized
-
-
-async def load_order_context(user: UserContext) -> dict[str, object]:
-    try:
-        return await load_managed_repair_order_context(user)
-    except Exception as exc:
-        return {
-            "context_error": f"{type(exc).__name__}: {exc}",
-            "selected_address": {},
-            "contacts": None,
-            "phone": None,
-        }
 
 
 def get_extractor_history(state: AgentState) -> str:
@@ -356,45 +287,19 @@ async def intent_node(state: AgentState) -> dict[str, object]:
 async def search_product_node(state: AgentState) -> dict[str, object]:
     """根据已抽取的商品和问题，尽早匹配真实可下单商品。"""
 
+    workflow = get_order_workflow_service()
     existing_products = state.get("products") or []
     last_msg = state.get("last_user_message", "")
     selection = parse_product_selection(last_msg)
     if existing_products and selection == 0:
-        output = {
-            "products": [],
-            "selected_product_code": None,
-            "service_type": None,
-            "effective_service_type": None,
-            "coverage_result": {},
-            "order_submit_route": None,
-            "order_card_fields": [],
-            "product_selection_rejected": True,
-            "missing_info": [],
-            "phase": PHASE_COLLECTING,
-            "step": "search_product_node",
-        }
+        output = workflow.reject_products()
         trace_logger("node.search_product.rejected", **output)
         return output
 
     if existing_products and selection in {1, 2, 3}:
-        selected_product = existing_products[int(selection) - 1] if len(existing_products) >= int(selection) else {}
-        if selected_product:
-            service_type = selected_product.get("service_order_type") or state.get("service_type")
-            normalized_order_info = normalize_order_defaults(
-                service_type=service_type,
-                order_info=state.get("order_info", {}),
-                last_user_message=last_msg,
-            )
-            output = {
-                "selected_product_code": selected_product.get("service_product_code"),
-                "service_type": service_type,
-                "order_info": normalized_order_info,
-                "product_selection_rejected": False,
-                "phase": PHASE_PRE_ORDER,
-                "step": "search_product_node",
-            }
-            trace_logger("node.search_product.selected_by_text", selection=selection, **output)
-            return output
+        output = workflow.select_existing_product_by_rank(state=state, selection=int(selection))
+        trace_logger("node.search_product.selected_by_text", selection=selection, **output)
+        return output
 
     if state.get("intent") == "confirm_order" and existing_products:
         trace_logger(
@@ -445,20 +350,11 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         last_user_message=state.get("last_user_message", ""),
     )
 
-    output = {
-        "products": products,
-        "selected_product_code": resolve_selected_code(
-            products,
-            state.get("selected_product_code"),
-            default_to_first=False,
-        ),
-        "service_type": service_type,
-        "order_info": normalized_order_info,
-        "product_selection_rejected": False,
-        "order_card_fields": [],
-        "phase": PHASE_PRODUCT_SELECTION if products else PHASE_COLLECTING,
-        "step": "search_product_node",
-    }
+    output = workflow.match_products(
+        state={**state, "order_info": normalized_order_info},
+        products=products,
+        service_type=service_type,
+    )
     trace_logger(
         "node.search_product.output",
         tool_status=result.get("status"),
@@ -559,17 +455,12 @@ async def prepare_order_context_node(state: AgentState) -> dict[str, object]:
         }
 
     service_type = get_effective_service_type(state)
-    order_context = await load_order_context(user_from_runtime_config())
-
-    order_card_fields = build_order_card_fields(
-        service_type=service_type,
-        order_info=state.get("order_info", {}),
-        order_context=order_context,
-    )
     output = {
-        "order_context": order_context,
-        "order_card_fields": order_card_fields,
-        "phase": PHASE_PRE_ORDER,
+        **await get_order_workflow_service().prepare_pre_order(
+            state=state,
+            service_type=service_type,
+            user=user_from_runtime_config(),
+        ),
         "step": "prepare_order_context_node",
     }
     trace_logger("node.prepare_order_context.output", service_type=service_type, **output)
@@ -887,6 +778,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "retry_count": 0,
         "off_topic_count": 0,
     }
+    output.update(event_to_state_patch(OrderCancelled(payload={"phase": PHASE_CANCELLED})))
     trace_logger(
         "node.cancel.output",
         answer=answer,
@@ -1069,61 +961,11 @@ async def select_product_in_session(
             raise SessionAccessError("会话不存在或尚未开始对话")
         ensure_session_access(state, active_user)
 
-        products = state.get("products") or []
-        selected = find_product_by_code(products, product_code)
-        if not selected:
-            raise ValueError(f"商品 {product_code} 不在当前检索结果中")
-
-        service_type = selected.get("service_order_type") or state.get("service_type")
-        order_info = normalize_order_defaults(
-            service_type=service_type,
-            order_info=state.get("order_info", {}),
-            last_user_message=state.get("last_user_message", ""),
+        update = await get_order_workflow_service().select_product(
+            state=state,
+            product_code=product_code,
+            user=active_user,
         )
-        effective_service_type = service_type
-        coverage_result: dict[str, object] = {}
-        if service_type == "托管维修":
-            result = await check_hosting_product_coverage(
-                order_info=order_info,
-                matched_product=selected,
-                user=active_user,
-            )
-            coverage_result = result.get("data") or {}
-            effective_service_type = str(coverage_result.get("effective_service_type") or service_type)
-            order_info = normalize_order_defaults(
-                service_type=effective_service_type,
-                order_info=order_info,
-                last_user_message=state.get("last_user_message", ""),
-            )
-        else:
-            coverage_result = {
-                "checked": False,
-                "covered": None,
-                "reason": "非托管维修商品，无需校验维保卡范围",
-                "effective_service_type": service_type,
-            }
-        order_context = await load_order_context(active_user)
-        order_card_fields = build_order_card_fields(
-            service_type=effective_service_type,
-            order_info=order_info,
-            order_context=order_context,
-        )
-        missing_info = collect_missing_order_info(effective_service_type, order_info, order_card_fields)
-
-        update = {
-            "selected_product_code": product_code.strip(),
-            "service_type": service_type,
-            "effective_service_type": effective_service_type,
-            "coverage_result": coverage_result,
-            "order_submit_route": resolve_order_submit_route(effective_service_type),
-            "order_info": order_info,
-            "order_context": order_context,
-            "order_card_fields": order_card_fields,
-            "missing_info": missing_info,
-            "phase": PHASE_PRE_ORDER,
-            "submission": empty_submission(),
-            "product_selection_rejected": False,
-        }
         await graph.aupdate_state(config, update, as_node="search_product_node")
 
         merged_state = dict(state)
@@ -1132,10 +974,12 @@ async def select_product_in_session(
         if order_preview is None:
             raise ValueError("更新商品后无法生成订单预览")
 
+        selected = find_product_by_code(state.get("products") or [], product_code) or {}
         product_name = selected.get("service_product_name") or product_code
         repair_level = selected.get("repair_category") or selected.get("product_type") or selected.get("service_order_type") or "待确认"
         message = f"好的，已为您选择【{product_name}（{repair_level}）】，正在生成预下单卡片。"
-        if missing_info:
+        missing_info = update.get("missing_info") or []
+        if isinstance(missing_info, list) and missing_info:
             message = f"{message}\n{build_missing_info_fallback_question(missing_info)}"
 
         return {
@@ -1163,44 +1007,13 @@ async def update_order_info_in_session(
             raise SessionAccessError("会话不存在或尚未开始对话")
         ensure_session_access(state, active_user)
 
-        selected_product = get_selected_product(
-            state.get("products") or [],
-            state.get("selected_product_code"),
-            default_to_first=False,
-        )
-        if not selected_product:
-            raise ValueError("请先选择商品，再修改预下单信息")
-
         service_type = get_effective_service_type(state)
-        order_info = normalize_order_card_update(
-            order_info=state.get("order_info", {}),
+        update = await get_order_workflow_service().update_order_card(
+            state=state,
             updates=updates,
             service_type=service_type,
+            user=active_user,
         )
-        order_info = normalize_order_defaults(
-            service_type=service_type,
-            order_info=order_info,
-            last_user_message=state.get("last_user_message", ""),
-        )
-        order_context = state.get("order_context") or {}
-        if not order_context:
-            order_context = await load_order_context(active_user)
-
-        order_card_fields = build_order_card_fields(
-            service_type=service_type,
-            order_info=order_info,
-            order_context=order_context,
-        )
-        missing_info = collect_missing_order_info(service_type, order_info, order_card_fields)
-
-        update = {
-            "order_info": order_info,
-            "order_context": order_context,
-            "order_card_fields": order_card_fields,
-            "missing_info": missing_info,
-            "phase": PHASE_PRE_ORDER,
-            "submission": empty_submission(),
-        }
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
 
         merged_state = dict(state)
@@ -1251,6 +1064,14 @@ async def confirm_order_in_session(
             },
             last_user_message=state.get("last_user_message", ""),
         )
+        confirmed_event_patch = event_to_state_patch(
+            OrderConfirmed(
+                payload={
+                    "order_info": order_info,
+                    "phase": PHASE_PRE_ORDER,
+                }
+            )
+        )
         order_card_fields = state.get("order_card_fields") or []
         missing_info = collect_missing_order_info(service_type, order_info, order_card_fields)
         if missing_info:
@@ -1259,6 +1080,7 @@ async def confirm_order_in_session(
                 "missing_info": missing_info,
                 "phase": PHASE_PRE_ORDER,
                 "submission": empty_submission(),
+                **confirmed_event_patch,
             }
             await graph.aupdate_state(config, update, as_node="validate_order_node")
             merged_state = dict(state)
@@ -1272,7 +1094,12 @@ async def confirm_order_in_session(
         confirmed_state = dict(state)
         confirmed_state["order_info"] = order_info
         confirmed_state["missing_info"] = []
+        confirmed_state.update(confirmed_event_patch)
         submit_update = await submit_order_from_state(confirmed_state, active_user, emit=False)
+        submit_update["order_events"] = [
+            *(confirmed_event_patch.get("order_events") or []),
+            *(submit_update.get("order_events") or []),
+        ]
         await graph.aupdate_state(config, submit_update, as_node="submit_node")
 
         merged_state = dict(confirmed_state)
@@ -1332,6 +1159,14 @@ async def stream_agent_events(
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
+        **event_to_state_patch(
+            UserMessageReceived(
+                payload={
+                    "last_user_message": user_message,
+                    "user_id": active_user.user_id,
+                }
+            )
+        ),
     }
 
     try:
@@ -1475,6 +1310,14 @@ async def run_agent(
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
+        **event_to_state_patch(
+            UserMessageReceived(
+                payload={
+                    "last_user_message": user_message,
+                    "user_id": active_user.user_id,
+                }
+            )
+        ),
     }
 
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
