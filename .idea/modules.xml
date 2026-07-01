@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/hotel-ai-order-cursor.iml" filepath="$PROJECT_DIR$/.idea/hotel-ai-order-cursor.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/hotel-ai-order.iml" filepath="$PROJECT_DIR$/.idea/hotel-ai-order.iml" />
     </modules>
   </component>
 </project>

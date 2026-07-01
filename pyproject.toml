@@ -1,5 +1,5 @@
 [project]
-name = "hotel-ai-order-cursor"
+name = "hotel-ai-order"
 version = "0.1.0"
 description = "LangGraph + FastAPI hotel order agent"
 readme = "README.md"
